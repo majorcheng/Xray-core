@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -36,6 +37,32 @@ import (
 
 type Conn struct {
 	*reality.Conn
+}
+
+var mldsaKeyCache sync.Map
+
+// getCachedMldsaPublicKey 复用已解析的 ML-DSA 公钥，避免握手热路径重复反序列化。
+func getCachedMldsaPublicKey(raw []byte) *mldsa65.PublicKey {
+	if len(raw) == 0 {
+		return nil
+	}
+	keyStr := string(raw)
+	if cached, ok := mldsaKeyCache.Load(keyStr); ok {
+		if pubKey, ok := cached.(*mldsa65.PublicKey); ok {
+			return pubKey
+		}
+	}
+
+	verify, err := mldsa65.Scheme().UnmarshalBinaryPublicKey(raw)
+	if err != nil {
+		return nil
+	}
+	pubKey, ok := verify.(*mldsa65.PublicKey)
+	if !ok {
+		return nil
+	}
+	mldsaKeyCache.Store(keyStr, pubKey)
+	return pubKey
 }
 
 func (c *Conn) HandshakeAddress() net.Address {
@@ -89,10 +116,11 @@ func (c *UConn) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x50
 				if len(certs[0].Extensions) > 0 {
 					h.Write(c.HandshakeState.Hello.Raw)
 					h.Write(c.HandshakeState.ServerHello.Raw)
-					verify, _ := mldsa65.Scheme().UnmarshalBinaryPublicKey(c.Config.Mldsa65Verify)
-					if mldsa65.Verify(verify.(*mldsa65.PublicKey), h.Sum(nil), nil, certs[0].Extensions[0].Value) {
-						c.Verified = true
-						return nil
+					if pubKey := getCachedMldsaPublicKey(c.Config.Mldsa65Verify); pubKey != nil {
+						if mldsa65.Verify(pubKey, h.Sum(nil), nil, certs[0].Extensions[0].Value) {
+							c.Verified = true
+							return nil
+						}
 					}
 				}
 			} else {
@@ -229,13 +257,15 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 				}
 				times := 1
 				if !first {
-					times = int(crypto.RandBetween(config.SpiderY[4], config.SpiderY[5]))
+					//times = int(crypto.RandBetween(config.SpiderY[4], config.SpiderY[5]))
+					times = int(randRange(config.SpiderY[4], config.SpiderY[5]))
 				}
 				for j := 0; j < times; j++ {
 					if !first && j == 0 {
 						req.Header.Set("Referer", firstURL)
 					}
-					req.AddCookie(&http.Cookie{Name: "padding", Value: strings.Repeat("0", int(crypto.RandBetween(config.SpiderY[0], config.SpiderY[1])))})
+					//req.AddCookie(&http.Cookie{Name: "padding", Value: strings.Repeat("0", int(crypto.RandBetween(config.SpiderY[0], config.SpiderY[1])))})
+					req.AddCookie(&http.Cookie{Name: "padding", Value: strings.Repeat("0", int(randRange(config.SpiderY[0], config.SpiderY[1])))})
 					if resp, err = client.Do(req); err != nil {
 						break
 					}
@@ -259,18 +289,21 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 					}
 					maps.Unlock()
 					if !first {
-						time.Sleep(time.Duration(crypto.RandBetween(config.SpiderY[6], config.SpiderY[7])) * time.Millisecond) // interval
+						//time.Sleep(time.Duration(crypto.RandBetween(config.SpiderY[6], config.SpiderY[7])) * time.Millisecond) // interval
+						time.Sleep(time.Duration(randRange(config.SpiderY[6], config.SpiderY[7])) * time.Millisecond) // interval
 					}
 				}
 			}
 			get(true)
-			concurrency := int(crypto.RandBetween(config.SpiderY[2], config.SpiderY[3]))
+			//concurrency := int(crypto.RandBetween(config.SpiderY[2], config.SpiderY[3]))
+			concurrency := int(randRange(config.SpiderY[2], config.SpiderY[3]))
 			for i := 0; i < concurrency; i++ {
 				go get(false)
 			}
 			// Do not close the connection
 		}()
-		time.Sleep(time.Duration(crypto.RandBetween(config.SpiderY[8], config.SpiderY[9])) * time.Millisecond) // return
+		//time.Sleep(time.Duration(crypto.RandBetween(config.SpiderY[8], config.SpiderY[9])) * time.Millisecond) // return
+		time.Sleep(time.Duration(randRange(config.SpiderY[8], config.SpiderY[9])) * time.Millisecond) // return
 		return nil, errors.New("REALITY: processed invalid connection").AtWarning()
 	}
 	return uConn, nil
@@ -287,7 +320,11 @@ var maps struct {
 }
 
 func getPathLocked(paths map[string]struct{}) string {
-	stopAt := int(crypto.RandBetween(0, int64(len(paths)-1)))
+	//stopAt := int(crypto.RandBetween(0, int64(len(paths)-1)))
+	if len(paths) == 0 {
+		return "/"
+	}
+	stopAt := rand.IntN(len(paths))
 	i := 0
 	for s := range paths {
 		if i == stopAt {
@@ -296,4 +333,11 @@ func getPathLocked(paths map[string]struct{}) string {
 		i++
 	}
 	return "/"
+}
+
+func randRange(min, max int64) int64 {
+	if max <= min {
+		return min
+	}
+	return rand.Int64N(max-min) + min
 }
