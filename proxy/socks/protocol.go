@@ -347,19 +347,27 @@ func DecodeUDPPacket(packet *buf.Buffer) (*protocol.RequestHeader, error) {
 }
 
 func EncodeUDPPacket(request *protocol.RequestHeader, data []byte) (*buf.Buffer, error) {
-	b := buf.New()
-	common.Must2(b.Write([]byte{0, 0, 0 /* Fragment */}))
-	if err := addrParser.WriteAddressPort(b, request.Address, request.Port); err != nil {
-		b.Release()
+	packet := buf.New()
+	if err := encodeUDPPacketToBuffer(packet, request, data); err != nil {
+		packet.Release()
 		return nil, err
 	}
-	// if data is too large, return an empty buffer (drop too big data)
-	if b.Available() < int32(len(data)) {
-		b.Clear()
-		return b, nil
+	return packet, nil
+}
+
+func encodeUDPPacketToBuffer(packet *buf.Buffer, request *protocol.RequestHeader, data []byte) error {
+	packet.Clear()
+	common.Must2(packet.Write([]byte{0, 0, 0 /* Fragment */}))
+	if err := addrParser.WriteAddressPort(packet, request.Address, request.Port); err != nil {
+		return err
 	}
-	common.Must2(b.Write(data))
-	return b, nil
+	// if data is too large, return an empty buffer (drop too big data)
+	if packet.Available() < int32(len(data)) {
+		packet.Clear()
+		return nil
+	}
+	common.Must2(packet.Write(data))
+	return nil
 }
 
 type UDPReader struct {
@@ -389,6 +397,9 @@ type UDPWriter struct {
 }
 
 func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	packet := buf.New()
+	defer packet.Release()
+
 	for {
 		mb2, b := buf.SplitFirst(mb)
 		mb = mb2
@@ -396,20 +407,26 @@ func (w *UDPWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 			break
 		}
 		request := w.Request
+		var udpRequest protocol.RequestHeader
 		if b.UDP != nil {
-			request = &protocol.RequestHeader{
+			udpRequest = protocol.RequestHeader{
 				Address: b.UDP.Address,
 				Port:    b.UDP.Port,
 			}
+			request = &udpRequest
 		}
-		packet, err := EncodeUDPPacket(request, b.Bytes())
+
+		err := encodeUDPPacketToBuffer(packet, request, b.Bytes())
 		b.Release()
 		if err != nil {
 			buf.ReleaseMulti(mb)
 			return err
 		}
-		_, err = w.Writer.Write(packet.Bytes())
-		packet.Release()
+		if packet.IsEmpty() {
+			continue
+		}
+
+		err = buf.WriteAllBytes(w.Writer, packet.Bytes(), nil)
 		if err != nil {
 			buf.ReleaseMulti(mb)
 			return err
@@ -424,79 +441,92 @@ func ClientHandshake(request *protocol.RequestHeader, reader io.Reader, writer i
 		authByte = byte(authPassword)
 	}
 
-	b := buf.New()
-	defer b.Release()
-
-	common.Must2(b.Write([]byte{socks5Version, 0x01, authByte}))
-	if err := buf.WriteAllBytes(writer, b.Bytes(), nil); err != nil {
+	greeting := [3]byte{socks5Version, 0x01, authByte}
+	if err := buf.WriteAllBytes(writer, greeting[:], nil); err != nil {
 		return nil, err
 	}
 
-	b.Clear()
-	if _, err := b.ReadFullFrom(reader, 2); err != nil {
+	authResp := [2]byte{}
+	if _, err := io.ReadFull(reader, authResp[:]); err != nil {
 		return nil, err
 	}
 
-	if b.Byte(0) != socks5Version {
-		return nil, errors.New("unexpected server version: ", b.Byte(0)).AtWarning()
+	if authResp[0] != socks5Version {
+		return nil, errors.New("unexpected server version: ", authResp[0]).AtWarning()
 	}
-	if b.Byte(1) != authByte {
+	if authResp[1] != authByte {
 		return nil, errors.New("auth method not supported.").AtWarning()
 	}
 
 	if authByte == authPassword {
-		b.Clear()
-		account := request.User.Account.(*Account)
-		common.Must(b.WriteByte(0x01))
-		common.Must(b.WriteByte(byte(len(account.Username))))
-		common.Must2(b.WriteString(account.Username))
-		common.Must(b.WriteByte(byte(len(account.Password))))
-		common.Must2(b.WriteString(account.Password))
-		if err := buf.WriteAllBytes(writer, b.Bytes(), nil); err != nil {
+		if request.User == nil || request.User.Account == nil {
+			return nil, errors.New("user account is missing for password authentication")
+		}
+
+		account, ok := request.User.Account.(*Account)
+		if !ok {
+			return nil, errors.New("invalid socks account type")
+		}
+		if len(account.Username) > 255 || len(account.Password) > 255 {
+			return nil, errors.New("username or password is too long")
+		}
+
+		authPayload := buf.StackNew()
+		defer authPayload.Release()
+		common.Must(authPayload.WriteByte(0x01))
+		common.Must(authPayload.WriteByte(byte(len(account.Username))))
+		common.Must2(authPayload.WriteString(account.Username))
+		common.Must(authPayload.WriteByte(byte(len(account.Password))))
+		common.Must2(authPayload.WriteString(account.Password))
+		if err := buf.WriteAllBytes(writer, authPayload.Bytes(), nil); err != nil {
 			return nil, err
 		}
 
-		b.Clear()
-		if _, err := b.ReadFullFrom(reader, 2); err != nil {
+		passResp := [2]byte{}
+		if _, err := io.ReadFull(reader, passResp[:]); err != nil {
 			return nil, err
 		}
-		if b.Byte(1) != 0x00 {
-			return nil, errors.New("server rejects account: ", b.Byte(1))
+		if passResp[1] != 0x00 {
+			return nil, errors.New("server rejects account: ", passResp[1])
 		}
 	}
-
-	b.Clear()
 
 	command := byte(cmdTCPConnect)
 	if request.Command == protocol.RequestCommandUDP {
 		command = byte(cmdUDPAssociate)
 	}
-	common.Must2(b.Write([]byte{socks5Version, command, 0x00 /* reserved */}))
+
+	requestPayload := buf.StackNew()
+	defer requestPayload.Release()
+	common.Must2(requestPayload.Write([]byte{socks5Version, command, 0x00 /* reserved */}))
 	if request.Command == protocol.RequestCommandUDP {
-		common.Must2(b.Write([]byte{1, 0, 0, 0, 0, 0, 0 /* RFC 1928 */}))
+		common.Must2(requestPayload.Write([]byte{1, 0, 0, 0, 0, 0, 0 /* RFC 1928 */}))
 	} else {
-		if err := addrParser.WriteAddressPort(b, request.Address, request.Port); err != nil {
+		if err := addrParser.WriteAddressPort(&requestPayload, request.Address, request.Port); err != nil {
 			return nil, err
 		}
 	}
 
-	if err := buf.WriteAllBytes(writer, b.Bytes(), nil); err != nil {
+	if err := buf.WriteAllBytes(writer, requestPayload.Bytes(), nil); err != nil {
 		return nil, err
 	}
 
-	b.Clear()
-	if _, err := b.ReadFullFrom(reader, 3); err != nil {
+	requestResp := [3]byte{}
+	if _, err := io.ReadFull(reader, requestResp[:]); err != nil {
 		return nil, err
 	}
 
-	resp := b.Byte(1)
+	if requestResp[0] != socks5Version {
+		return nil, errors.New("unexpected server response version: ", requestResp[0]).AtWarning()
+	}
+	resp := requestResp[1]
 	if resp != 0x00 {
 		return nil, errors.New("server rejects request: ", resp)
 	}
 
-	b.Clear()
-
-	address, port, err := addrParser.ReadAddressPort(b, reader)
+	addrBuffer := buf.StackNew()
+	defer addrBuffer.Release()
+	address, port, err := addrParser.ReadAddressPort(&addrBuffer, reader)
 	if err != nil {
 		return nil, err
 	}

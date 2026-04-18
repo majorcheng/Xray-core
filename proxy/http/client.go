@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -42,10 +43,112 @@ type h2Conn struct {
 	h2Conn  *http2.ClientConn
 }
 
-var (
-	cachedH2Mutex sync.Mutex
-	cachedH2Conns map[net.Destination]h2Conn
+const (
+	connectHandshakeTimeout = 8 * time.Second
+	h2RetireTimeout         = 5 * time.Second
 )
+
+var (
+	cachedH2Mutex   sync.Mutex
+	cachedH2Conns   map[net.Destination]h2Conn
+	bufioReaderPool = sync.Pool{
+		New: func() interface{} {
+			return bufio.NewReaderSize(nil, 4096)
+		},
+	}
+)
+
+func loadCachedH2Conn(dest net.Destination) (h2Conn, bool) {
+	cachedH2Mutex.Lock()
+	conn, found := cachedH2Conns[dest]
+	cachedH2Mutex.Unlock()
+	return conn, found
+}
+
+func sameH2Conn(a, b h2Conn) bool {
+	if a.h2Conn != nil || b.h2Conn != nil {
+		return a.h2Conn == b.h2Conn
+	}
+	return a.rawConn == b.rawConn
+}
+
+func storeCachedH2Conn(dest net.Destination, conn h2Conn) {
+	var oldConn h2Conn
+	var hasOldConn bool
+
+	cachedH2Mutex.Lock()
+	if cachedH2Conns == nil {
+		cachedH2Conns = make(map[net.Destination]h2Conn)
+	}
+	if old, found := cachedH2Conns[dest]; found && !sameH2Conn(old, conn) {
+		oldConn = old
+		hasOldConn = true
+	}
+	cachedH2Conns[dest] = conn
+	cachedH2Mutex.Unlock()
+
+	if hasOldConn {
+		retireH2Conn(oldConn)
+	}
+}
+
+func evictCachedH2Conn(dest net.Destination, expect h2Conn) bool {
+	var staleConn h2Conn
+	evicted := false
+
+	cachedH2Mutex.Lock()
+	if current, found := cachedH2Conns[dest]; found && sameH2Conn(current, expect) {
+		delete(cachedH2Conns, dest)
+		staleConn = current
+		evicted = true
+	}
+	cachedH2Mutex.Unlock()
+
+	if evicted {
+		retireH2Conn(staleConn)
+	}
+	return evicted
+}
+
+func retireH2Conn(conn h2Conn) {
+	if conn.h2Conn == nil {
+		if conn.rawConn != nil {
+			_ = conn.rawConn.Close()
+		}
+		return
+	}
+
+	go func() {
+		conn.h2Conn.SetDoNotReuse()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), h2RetireTimeout)
+		err := conn.h2Conn.Shutdown(shutdownCtx)
+		cancel()
+		if err != nil && conn.rawConn != nil {
+			_ = conn.rawConn.Close()
+		}
+	}()
+}
+
+func withConnectTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, found := ctx.Deadline(); found {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, connectHandshakeTimeout)
+}
+
+func setConnectDeadline(conn net.Conn, ctx context.Context) func() {
+	deadline := time.Now().Add(connectHandshakeTimeout)
+	if ctxDeadline, found := ctx.Deadline(); found && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return func() {}
+	}
+	return func() {
+		_ = conn.SetDeadline(time.Time{})
+	}
+}
 
 // NewClient create a new http client based on the given config.
 func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
@@ -212,7 +315,10 @@ func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, u
 	}
 
 	if user != nil && user.Account != nil {
-		account := user.Account.(*Account)
+		account, ok := user.Account.(*Account)
+		if !ok {
+			return nil, errors.New("invalid HTTP account type")
+		}
 		auth := account.GetUsername() + ":" + account.GetPassword()
 		req.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(auth)))
 	}
@@ -224,76 +330,98 @@ func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, u
 
 	connectHTTP1 := func(rawConn net.Conn) (net.Conn, error) {
 		req.Header.Set("Proxy-Connection", "Keep-Alive")
+		clearDeadline := setConnectDeadline(rawConn, ctx)
+		defer clearDeadline()
 
-		err := req.Write(rawConn)
-		if err != nil {
+		if err := req.Write(rawConn); err != nil {
 			rawConn.Close()
 			return nil, err
 		}
 
-		resp, err := http.ReadResponse(bufio.NewReader(rawConn), req)
+		br := bufioReaderPool.Get().(*bufio.Reader)
+		br.Reset(rawConn)
+
+		resp, err := http.ReadResponse(br, req)
 		if err != nil {
 			rawConn.Close()
+			bufioReaderPool.Put(br)
 			return nil, err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			rawConn.Close()
+			bufioReaderPool.Put(br)
 			return nil, errors.New("Proxy responded with non 200 code: " + resp.Status)
 		}
+
+		if br.Buffered() > 0 {
+			return &BufferedConn{Conn: rawConn, r: br}, nil
+		}
+
+		bufioReaderPool.Put(br)
 		return rawConn, nil
 	}
 
-	connectHTTP2 := func(rawConn net.Conn, h2clientConn *http2.ClientConn) (net.Conn, error) {
+	connectHTTP2 := func(rawConn net.Conn, h2clientConn *http2.ClientConn, sharedConn bool) (net.Conn, error) {
+		if !sharedConn {
+			clearDeadline := setConnectDeadline(rawConn, ctx)
+			defer clearDeadline()
+		}
+
 		pr, pw := io.Pipe()
-		req.Body = pr
+		h2Req := req.Clone(context.Background())
+		h2Req.Body = pr
 
-		var pErr error
-		var wg sync.WaitGroup
-		wg.Add(1)
+		payloadWriteErr := make(chan error, 1)
+		if len(firstPayload) > 0 {
+			go func() {
+				_, err := pw.Write(firstPayload)
+				payloadWriteErr <- err
+			}()
+		} else {
+			payloadWriteErr <- nil
+		}
 
-		go func() {
-			_, pErr = pw.Write(firstPayload)
-			wg.Done()
-		}()
-
-		resp, err := h2clientConn.RoundTrip(req)
+		resp, err := h2clientConn.RoundTrip(h2Req)
 		if err != nil {
-			rawConn.Close()
+			_ = pw.CloseWithError(err)
+			<-payloadWriteErr
 			return nil, err
 		}
 
-		wg.Wait()
-		if pErr != nil {
-			rawConn.Close()
-			return nil, pErr
+		if err := <-payloadWriteErr; err != nil {
+			_ = pw.CloseWithError(err)
+			_ = resp.Body.Close()
+			return nil, err
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			rawConn.Close()
+			_ = pw.Close()
+			_ = resp.Body.Close()
 			return nil, errors.New("Proxy responded with non 200 code: " + resp.Status)
 		}
 		return newHTTP2Conn(rawConn, pw, resp.Body), nil
 	}
 
-	cachedH2Mutex.Lock()
-	cachedConn, cachedConnFound := cachedH2Conns[dest]
-	cachedH2Mutex.Unlock()
-
-	if cachedConnFound {
+	if cachedConn, found := loadCachedH2Conn(dest); found {
 		rc, cc := cachedConn.rawConn, cachedConn.h2Conn
-		if cc.CanTakeNewRequest() {
-			proxyConn, err := connectHTTP2(rc, cc)
+		if cc != nil && cc.CanTakeNewRequest() {
+			proxyConn, err := connectHTTP2(rc, cc, true)
 			if err != nil {
-				return nil, err
+				evictCachedH2Conn(dest, cachedConn)
+			} else {
+				return proxyConn, nil
 			}
-
-			return proxyConn, nil
+		} else if cc == nil || cc.State().Closed || cc.State().Closing {
+			evictCachedH2Conn(dest, cachedConn)
 		}
 	}
 
-	rawConn, err := dialer.Dial(ctx, dest)
+	connectCtx, cancel := withConnectTimeout(ctx)
+	defer cancel()
+
+	rawConn, err := dialer.Dial(connectCtx, dest)
 	if err != nil {
 		return nil, err
 	}
@@ -302,13 +430,13 @@ func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, u
 
 	nextProto := ""
 	if tlsConn, ok := iConn.(*tls.Conn); ok {
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
+		if err := tlsConn.HandshakeContext(connectCtx); err != nil {
 			rawConn.Close()
 			return nil, err
 		}
 		nextProto = tlsConn.ConnectionState().NegotiatedProtocol
 	} else if tlsConn, ok := iConn.(*tls.UConn); ok {
-		if err := tlsConn.HandshakeContext(ctx); err != nil {
+		if err := tlsConn.HandshakeContext(connectCtx); err != nil {
 			rawConn.Close()
 			return nil, err
 		}
@@ -326,22 +454,16 @@ func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, u
 			return nil, err
 		}
 
-		proxyConn, err := connectHTTP2(rawConn, h2clientConn)
+		proxyConn, err := connectHTTP2(rawConn, h2clientConn, false)
 		if err != nil {
-			rawConn.Close()
+			retireH2Conn(h2Conn{rawConn: rawConn, h2Conn: h2clientConn})
 			return nil, err
 		}
 
-		cachedH2Mutex.Lock()
-		if cachedH2Conns == nil {
-			cachedH2Conns = make(map[net.Destination]h2Conn)
-		}
-
-		cachedH2Conns[dest] = h2Conn{
+		storeCachedH2Conn(dest, h2Conn{
 			rawConn: rawConn,
 			h2Conn:  h2clientConn,
-		}
-		cachedH2Mutex.Unlock()
+		})
 
 		return proxyConn, err
 	default:
@@ -370,6 +492,42 @@ func (h *http2Conn) Write(p []byte) (n int, err error) {
 func (h *http2Conn) Close() error {
 	h.in.Close()
 	return h.out.Close()
+}
+
+// BufferedConn preserves already-read bytes from CONNECT response parsing.
+type BufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *BufferedConn) releaseReader() {
+	if c.r != nil {
+		bufioReaderPool.Put(c.r)
+		c.r = nil
+	}
+}
+
+func (c *BufferedConn) Read(p []byte) (int, error) {
+	if c.r == nil {
+		return c.Conn.Read(p)
+	}
+
+	n, err := c.r.Read(p)
+	if c.r.Buffered() == 0 {
+		c.releaseReader()
+	}
+	if err == io.EOF {
+		if n > 0 {
+			return n, nil
+		}
+		return c.Conn.Read(p)
+	}
+	return n, err
+}
+
+func (c *BufferedConn) Close() error {
+	c.releaseReader()
+	return c.Conn.Close()
 }
 
 func init() {

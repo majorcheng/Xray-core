@@ -4,12 +4,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
-	"github.com/xtls/xray-core/common/crypto"
 	"github.com/xtls/xray-core/common/utils"
 	"github.com/xtls/xray-core/transport/internet"
 )
@@ -479,7 +479,11 @@ func init() {
 }
 
 func (c RangeConfig) rand() int32 {
-	return int32(crypto.RandBetween(int64(c.From), int64(c.To)))
+	delta := c.To - c.From
+	if delta <= 0 {
+		return c.From
+	}
+	return c.From + int32(rand.IntN(int(delta)))
 }
 
 func appendToPath(path, value string) string {

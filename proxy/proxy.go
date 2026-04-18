@@ -8,9 +8,8 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"io"
-	"math/big"
+	"math/rand/v2"
 	"runtime"
 	"strconv"
 	"time"
@@ -500,17 +499,11 @@ func XtlsPadding(b *buf.Buffer, command byte, userUUID *[]byte, longPadding bool
 		contentLen = b.Len()
 	}
 	if contentLen < int32(testseed[0]) && longPadding {
-		l, err := rand.Int(rand.Reader, big.NewInt(int64(testseed[1])))
-		if err != nil {
-			errors.LogDebugInner(ctx, err, "failed to generate padding")
-		}
-		paddingLen = int32(l.Int64()) + int32(testseed[2]) - contentLen
+		l := rand.Int64N(int64(testseed[1]))
+		paddingLen = int32(l) + int32(testseed[2]) - contentLen
 	} else {
-		l, err := rand.Int(rand.Reader, big.NewInt(int64(testseed[3])))
-		if err != nil {
-			errors.LogDebugInner(ctx, err, "failed to generate padding")
-		}
-		paddingLen = int32(l.Int64())
+		l := rand.Int64N(int64(testseed[3]))
+		paddingLen = int32(l)
 	}
 	if paddingLen > buf.Size-21-contentLen {
 		paddingLen = buf.Size - 21 - contentLen
