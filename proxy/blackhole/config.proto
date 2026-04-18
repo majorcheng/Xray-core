@@ -12,6 +12,8 @@ message NoneResponse {}
 
 message HTTPResponse {}
 
+message HealthResponse {}
+
 message Config {
   xray.common.serial.TypedMessage response = 1;
 }

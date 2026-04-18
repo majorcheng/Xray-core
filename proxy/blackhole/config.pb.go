@@ -94,6 +94,42 @@ func (*HTTPResponse) Descriptor() ([]byte, []int) {
 	return file_proxy_blackhole_config_proto_rawDescGZIP(), []int{1}
 }
 
+type HealthResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HealthResponse) Reset() {
+	*x = HealthResponse{}
+	mi := &file_proxy_blackhole_config_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HealthResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HealthResponse) ProtoMessage() {}
+
+func (x *HealthResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proxy_blackhole_config_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
+func (*HealthResponse) Descriptor() ([]byte, []int) {
+	return file_proxy_blackhole_config_proto_rawDescGZIP(), []int{2}
+}
+
 type Config struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Response      *serial.TypedMessage   `protobuf:"bytes,1,opt,name=response,proto3" json:"response,omitempty"`
@@ -103,7 +139,7 @@ type Config struct {
 
 func (x *Config) Reset() {
 	*x = Config{}
-	mi := &file_proxy_blackhole_config_proto_msgTypes[2]
+	mi := &file_proxy_blackhole_config_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -115,7 +151,7 @@ func (x *Config) String() string {
 func (*Config) ProtoMessage() {}
 
 func (x *Config) ProtoReflect() protoreflect.Message {
-	mi := &file_proxy_blackhole_config_proto_msgTypes[2]
+	mi := &file_proxy_blackhole_config_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -128,7 +164,7 @@ func (x *Config) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Config.ProtoReflect.Descriptor instead.
 func (*Config) Descriptor() ([]byte, []int) {
-	return file_proxy_blackhole_config_proto_rawDescGZIP(), []int{2}
+	return file_proxy_blackhole_config_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Config) GetResponse() *serial.TypedMessage {
@@ -144,7 +180,8 @@ const file_proxy_blackhole_config_proto_rawDesc = "" +
 	"\n" +
 	"\x1cproxy/blackhole/config.proto\x12\x14xray.proxy.blackhole\x1a!common/serial/typed_message.proto\"\x0e\n" +
 	"\fNoneResponse\"\x0e\n" +
-	"\fHTTPResponse\"F\n" +
+	"\fHTTPResponse\"\x10\n" +
+	"\x0eHealthResponse\"F\n" +
 	"\x06Config\x12<\n" +
 	"\bresponse\x18\x01 \x01(\v2 .xray.common.serial.TypedMessageR\bresponseB^\n" +
 	"\x18com.xray.proxy.blackholeP\x01Z)github.com/xtls/xray-core/proxy/blackhole\xaa\x02\x14Xray.Proxy.Blackholeb\x06proto3"
@@ -161,15 +198,16 @@ func file_proxy_blackhole_config_proto_rawDescGZIP() []byte {
 	return file_proxy_blackhole_config_proto_rawDescData
 }
 
-var file_proxy_blackhole_config_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_proxy_blackhole_config_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_proxy_blackhole_config_proto_goTypes = []any{
 	(*NoneResponse)(nil),        // 0: xray.proxy.blackhole.NoneResponse
 	(*HTTPResponse)(nil),        // 1: xray.proxy.blackhole.HTTPResponse
-	(*Config)(nil),              // 2: xray.proxy.blackhole.Config
-	(*serial.TypedMessage)(nil), // 3: xray.common.serial.TypedMessage
+	(*HealthResponse)(nil),      // 2: xray.proxy.blackhole.HealthResponse
+	(*Config)(nil),              // 3: xray.proxy.blackhole.Config
+	(*serial.TypedMessage)(nil), // 4: xray.common.serial.TypedMessage
 }
 var file_proxy_blackhole_config_proto_depIdxs = []int32{
-	3, // 0: xray.proxy.blackhole.Config.response:type_name -> xray.common.serial.TypedMessage
+	4, // 0: xray.proxy.blackhole.Config.response:type_name -> xray.common.serial.TypedMessage
 	1, // [1:1] is the sub-list for method output_type
 	1, // [1:1] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
@@ -188,7 +226,7 @@ func file_proxy_blackhole_config_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proxy_blackhole_config_proto_rawDesc), len(file_proxy_blackhole_config_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
