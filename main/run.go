@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -54,6 +55,7 @@ var (
 	dump        = cmdRun.Flag.Bool("dump", false, "Dump merged config only, without launching Xray server.")
 	test        = cmdRun.Flag.Bool("test", false, "Test config file only, without launching Xray server.")
 	format      = cmdRun.Flag.String("format", "auto", "Format of input file.")
+	pidFile     = cmdRun.Flag.String("pidfile", "", "Path to write process id file.")
 
 	/* We have to do this here because Golang's Test will also need to parse flag, before
 	 * main func in this file is run.
@@ -93,6 +95,12 @@ func executeRun(cmd *base.Command, args []string) {
 	}
 	defer server.Close()
 
+	if err := writePIDFile(*pidFile); err != nil {
+		fmt.Println("Failed to write pid file:", err)
+		os.Exit(-1)
+	}
+	defer removePIDFile(*pidFile)
+
 	// Explicitly triggering GC to remove garbage from config loading.
 	runtime.GC()
 	debug.FreeOSMemory()
@@ -102,6 +110,20 @@ func executeRun(cmd *base.Command, args []string) {
 		signal.Notify(osSignals, os.Interrupt, syscall.SIGTERM)
 		<-osSignals
 	}
+}
+
+func writePIDFile(filePath string) error {
+	if filePath == "" {
+		return nil
+	}
+	return os.WriteFile(filePath, []byte(strconv.Itoa(os.Getpid())), 0o644)
+}
+
+func removePIDFile(filePath string) {
+	if filePath == "" {
+		return
+	}
+	_ = os.Remove(filePath)
 }
 
 func dumpConfig() int {

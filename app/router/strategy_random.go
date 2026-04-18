@@ -20,12 +20,10 @@ type RandomStrategy struct {
 
 func (s *RandomStrategy) InjectContext(ctx context.Context) {
 	s.ctx = ctx
-	if len(s.FallbackTag) > 0 {
-		common.Must(core.RequireFeatures(s.ctx, func(observatory extension.Observatory) error {
-			s.observatory = observatory
-			return nil
-		}))
-	}
+	common.Must(core.OptionalFeatures(s.ctx, func(observatory extension.Observatory) error {
+		s.observatory = observatory
+		return nil
+	}))
 }
 
 func (s *RandomStrategy) GetPrincipleTarget(strings []string) []string {

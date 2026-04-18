@@ -2,10 +2,14 @@ package command
 
 import (
 	"context"
+	"strings"
 	"time"
 
+	routerapp "github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common"
+	"github.com/xtls/xray-core/common/cmdarg"
 	"github.com/xtls/xray-core/common/errors"
+	cserial "github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/features/stats"
@@ -59,6 +63,70 @@ func (s *routingServer) AddRule(ctx context.Context, request *AddRuleRequest) (*
 	}
 	return nil, errors.New("unsupported router implementation")
 
+}
+
+func extractRoutingConfigFromCore(config *core.Config) (*routerapp.Config, error) {
+	if config == nil {
+		return nil, errors.New("config is nil")
+	}
+
+	for _, appConfig := range config.App {
+		if appConfig == nil {
+			continue
+		}
+		instance, err := appConfig.GetInstance()
+		if err != nil {
+			return nil, err
+		}
+		if routingConfig, ok := instance.(*routerapp.Config); ok {
+			return routingConfig, nil
+		}
+	}
+
+	// 未显式配置 router app 时，按空路由表处理，保持与启动时“无路由规则”一致。
+	return &routerapp.Config{}, nil
+}
+
+func loadRoutingConfigFromFiles(format string, files []string) (*routerapp.Config, error) {
+	format = strings.TrimSpace(format)
+	if format == "" {
+		format = "auto"
+	}
+
+	configFiles := make(cmdarg.Arg, 0, len(files))
+	for _, file := range files {
+		file = strings.TrimSpace(file)
+		switch {
+		case file == "":
+			continue
+		case file == "stdin:":
+			return nil, errors.New("routing reload via API does not support stdin")
+		case strings.Contains(file, "://"):
+			return nil, errors.New("routing reload via API does not support remote config URLs: ", file)
+		default:
+			configFiles = append(configFiles, file)
+		}
+	}
+	if len(configFiles) == 0 {
+		return nil, errors.New("no local config files available for routing reload")
+	}
+
+	config, err := core.LoadConfig(format, configFiles)
+	if err != nil {
+		return nil, err
+	}
+	return extractRoutingConfigFromCore(config)
+}
+
+func (s *routingServer) ReloadRoutingConfig(ctx context.Context, request *ReloadRoutingConfigRequest) (*ReloadRoutingConfigResponse, error) {
+	if bo, ok := s.router.(routing.Router); ok {
+		routingConfig, err := loadRoutingConfigFromFiles(request.GetFormat(), request.GetConfigFiles())
+		if err != nil {
+			return nil, err
+		}
+		return &ReloadRoutingConfigResponse{}, bo.AddRule(cserial.ToTypedMessage(routingConfig), false)
+	}
+	return nil, errors.New("unsupported router implementation")
 }
 
 func (s *routingServer) RemoveRule(ctx context.Context, request *RemoveRuleRequest) (*RemoveRuleResponse, error) {

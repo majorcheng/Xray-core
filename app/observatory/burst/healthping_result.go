@@ -141,3 +141,11 @@ func (h *HealthPingRTTS) findOutdated(now time.Time) int {
 	}
 	return -1
 }
+
+// LastUpdateUnixNano 返回最近一次有效探测写入时间，用于和业务覆盖层做新旧比较。
+func (h *HealthPingRTTS) LastUpdateUnixNano() int64 {
+	if h == nil || len(h.rtts) == 0 || h.idx < 0 || h.idx >= len(h.rtts) || h.rtts[h.idx] == nil {
+		return 0
+	}
+	return h.rtts[h.idx].time.UnixNano()
+}

@@ -31,12 +31,10 @@ type RoundRobinStrategy struct {
 
 func (s *RoundRobinStrategy) InjectContext(ctx context.Context) {
 	s.ctx = ctx
-	if len(s.FallbackTag) > 0 {
-		common.Must(core.RequireFeatures(s.ctx, func(observatory extension.Observatory) error {
-			s.observatory = observatory
-			return nil
-		}))
-	}
+	common.Must(core.OptionalFeatures(s.ctx, func(observatory extension.Observatory) error {
+		s.observatory = observatory
+		return nil
+	}))
 }
 
 func (s *RoundRobinStrategy) GetPrincipleTarget(strings []string) []string {

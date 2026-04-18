@@ -8,6 +8,7 @@ import (
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/dice"
 	"github.com/xtls/xray-core/common/errors"
+	clog "github.com/xtls/xray-core/common/log"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/net/cnc"
 	"github.com/xtls/xray-core/common/session"
@@ -223,6 +224,15 @@ func checkAddressPortStrategy(ctx context.Context, dest net.Destination, sockopt
 	return nil, nil
 }
 
+// access log 需要等到底层真正拨号成功后，才能可靠判断出口走的是 v4 还是 v6。
+func recordAccessLogOnDialSuccess(ctx context.Context, conn net.Conn, err error) (net.Conn, error) {
+	if err == nil && conn != nil {
+		session.SubmitOutboundDialSuccessToOriginator(ctx)
+		clog.RecordAccessMessageFromContextWithEgress(ctx, conn.RemoteAddr())
+	}
+	return conn, err
+}
+
 // DialSystem calls system dialer to create a network connection.
 func DialSystem(ctx context.Context, dest net.Destination, sockopt *SocketConfig) (net.Conn, error) {
 	var src net.Address
@@ -241,7 +251,8 @@ func DialSystem(ctx context.Context, dest net.Destination, sockopt *SocketConfig
 		}
 	}
 	if sockopt == nil {
-		return effectiveSystemDialer.Dial(ctx, src, dest, sockopt)
+		conn, err := effectiveSystemDialer.Dial(ctx, src, dest, sockopt)
+		return recordAccessLogOnDialSuccess(ctx, conn, err)
 	}
 
 	if newDest, err := checkAddressPortStrategy(ctx, dest, sockopt); err == nil && newDest != nil {
@@ -264,7 +275,8 @@ func DialSystem(ctx context.Context, dest net.Destination, sockopt *SocketConfig
 			dest.Address = net.IPAddress(ips[dice.Roll(len(ips))])
 			errors.LogInfo(ctx, "replace destination with "+dest.String())
 		} else {
-			return TcpRaceDial(ctx, src, ips, dest.Port, sockopt, dest.Address.String())
+			conn, err := TcpRaceDial(ctx, src, ips, dest.Port, sockopt, dest.Address.String())
+			return recordAccessLogOnDialSuccess(ctx, conn, err)
 		}
 	}
 
@@ -279,7 +291,8 @@ func DialSystem(ctx context.Context, dest net.Destination, sockopt *SocketConfig
 		return redirect(ctx, dest, sockopt.DialerProxy, h), nil
 	}
 
-	return effectiveSystemDialer.Dial(ctx, src, dest, sockopt)
+	conn, err := effectiveSystemDialer.Dial(ctx, src, dest, sockopt)
+	return recordAccessLogOnDialSuccess(ctx, conn, err)
 }
 
 func InitSystemDialer(dc dns.Client, om outbound.Manager) {

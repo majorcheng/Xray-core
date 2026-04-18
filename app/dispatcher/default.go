@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xtls/xray-core/app/observatory"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/dns"
+	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/routing"
@@ -93,11 +95,81 @@ func (r *cachedReader) Interrupt() {
 
 // DefaultDispatcher is a default implementation of Dispatcher.
 type DefaultDispatcher struct {
-	ohm    outbound.Manager
-	router routing.Router
-	policy policy.Manager
-	stats  stats.Manager
-	fdns   dns.FakeDNSEngine
+	ohm         outbound.Manager
+	router      routing.Router
+	policy      policy.Manager
+	stats       stats.Manager
+	fdns        dns.FakeDNSEngine
+	observatory extension.Observatory
+}
+
+func protocolMatchesOverride(configured string, sniffed string, result SniffResult) bool {
+	configured = strings.ToLower(configured)
+	sniffed = strings.ToLower(sniffed)
+
+	if configured == sniffed {
+		return true
+	}
+
+	if subsetResult, ok := result.(SnifferIsProtoSubsetOf); ok && subsetResult.IsProtoSubsetOf(configured) {
+		return true
+	}
+
+	if configured == "http" {
+		return sniffed == "http1" || sniffed == "http2"
+	}
+
+	return false
+}
+
+func sniffedProtocolForLog(result SniffResult) string {
+	protocolString := result.Protocol()
+	if resComp, ok := result.(SnifferResultComposite); ok {
+		protocolString = resComp.ProtocolForDomainResult()
+	}
+	return protocolString
+}
+
+func setAccessMessageFromSniffResult(ctx context.Context, destination net.Destination, result SniffResult) {
+	accessMessage := log.AccessMessageFromContext(ctx)
+	if accessMessage == nil {
+		return
+	}
+
+	protocolString := sniffedProtocolForLog(result)
+	if protocolString != "" {
+		accessMessage.Reason = "[" + protocolString + "]"
+	}
+
+	if domain := result.Domain(); domain != "" {
+		target := destination
+		target.Address = net.ParseAddress(domain)
+		accessMessage.To = target
+	}
+}
+
+func (d *DefaultDispatcher) getObservedDelay(ctx context.Context, outboundTag string) (int64, bool) {
+	if d.observatory == nil || outboundTag == "" {
+		return 0, false
+	}
+	report, err := d.observatory.GetObservation(ctx)
+	if err != nil {
+		return 0, false
+	}
+	result, ok := report.(*observatory.ObservationResult)
+	if !ok {
+		return 0, false
+	}
+	for _, status := range result.Status {
+		if status == nil || status.OutboundTag != outboundTag {
+			continue
+		}
+		if status.Alive && status.Delay > 0 {
+			return status.Delay, true
+		}
+		return 0, false
+	}
+	return 0, false
 }
 
 func init() {
@@ -106,6 +178,9 @@ func init() {
 		if err := core.RequireFeatures(ctx, func(om outbound.Manager, router routing.Router, pm policy.Manager, sm stats.Manager, dc dns.Client) error {
 			core.OptionalFeatures(ctx, func(fdns dns.FakeDNSEngine) {
 				d.fdns = fdns
+			})
+			core.OptionalFeatures(ctx, func(observatory extension.Observatory) {
+				d.observatory = observatory
 			})
 			return d.Init(config.(*Config), om, router, pm, sm)
 		}); err != nil {
@@ -240,23 +315,15 @@ func (d *DefaultDispatcher) shouldOverride(ctx context.Context, result SniffResu
 	if request.ExcludeForIP != nil && destination.Address.Family().IsIP() && request.ExcludeForIP.Match(destination.Address.IP()) {
 		return false
 	}
-	protocolString := result.Protocol()
-	if resComp, ok := result.(SnifferResultComposite); ok {
-		protocolString = resComp.ProtocolForDomainResult()
-	}
+	protocolString := sniffedProtocolForLog(result)
 	for _, p := range request.OverrideDestinationForProtocol {
-		if strings.HasPrefix(protocolString, p) || strings.HasPrefix(p, protocolString) {
+		if protocolMatchesOverride(p, protocolString, result) {
 			return true
 		}
 		if fkr0, ok := d.fdns.(dns.FakeDNSEngineRev0); ok && protocolString != "bittorrent" && p == "fakedns" &&
 			fkr0.IsIPInIPPool(destination.Address) {
 			errors.LogInfo(ctx, "Using sniffer ", protocolString, " since the fake DNS missed")
 			return true
-		}
-		if resultSubset, ok := result.(SnifferIsProtoSubsetOf); ok {
-			if resultSubset.IsProtoSubsetOf(p) {
-				return true
-			}
 		}
 	}
 
@@ -295,15 +362,13 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
 			if err == nil {
 				content.Protocol = result.Protocol()
+				setAccessMessageFromSniffResult(ctx, destination, result)
 			}
 			if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
 				domain := result.Domain()
 				errors.LogInfo(ctx, "sniffed domain: ", domain)
 				destination.Address = net.ParseAddress(domain)
-				protocol := result.Protocol()
-				if resComp, ok := result.(SnifferResultComposite); ok {
-					protocol = resComp.ProtocolForDomainResult()
-				}
+				protocol := sniffedProtocolForLog(result)
 				isFakeIP := false
 				if fkr0, ok := d.fdns.(dns.FakeDNSEngineRev0); ok && fkr0.IsIPInIPPool(ob.Target.Address) {
 					isFakeIP = true
@@ -350,15 +415,13 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
 		if err == nil {
 			content.Protocol = result.Protocol()
+			setAccessMessageFromSniffResult(ctx, destination, result)
 		}
 		if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
 			domain := result.Domain()
 			errors.LogInfo(ctx, "sniffed domain: ", domain)
 			destination.Address = net.ParseAddress(domain)
-			protocol := result.Protocol()
-			if resComp, ok := result.(SnifferResultComposite); ok {
-				protocol = resComp.ProtocolForDomainResult()
-			}
+			protocol := sniffedProtocolForLog(result)
 			isFakeIP := false
 			if fkr0, ok := d.fdns.(dns.FakeDNSEngineRev0); ok && fkr0.IsIPInIPPool(ob.Target.Address) {
 				isFakeIP = true
@@ -388,35 +451,55 @@ func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, netw
 	}
 
 	contentResult, contentErr := func() (SniffResult, error) {
-		cacheDeadline := 200 * time.Millisecond
-		totalAttempt := 0
+		totalBudget := 350 * time.Millisecond
+		readBudget := 120 * time.Millisecond
+		maxNoClueAttempts := 3
+		maxEmptyReads := 3
+		if network == net.Network_UDP {
+			totalBudget = 180 * time.Millisecond
+			readBudget = 80 * time.Millisecond
+			maxNoClueAttempts = 2
+			maxEmptyReads = 2
+		}
+
+		remainingBudget := totalBudget
+		noClueAttempts := 0
+		emptyReads := 0
 		for {
+			if remainingBudget <= 0 {
+				return nil, errSniffingTimeout
+			}
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			default:
+				currentReadBudget := readBudget
+				if currentReadBudget > remainingBudget {
+					currentReadBudget = remainingBudget
+				}
+
 				cachingStartingTimeStamp := time.Now()
-				err := cReader.Cache(payload, cacheDeadline)
+				err := cReader.Cache(payload, currentReadBudget)
 				if err != nil {
 					return nil, err
 				}
 				cachingTimeElapsed := time.Since(cachingStartingTimeStamp)
-				cacheDeadline -= cachingTimeElapsed
+				remainingBudget -= cachingTimeElapsed
 
 				if !payload.IsEmpty() {
 					result, err := sniffer.Sniff(ctx, payload.Bytes(), network)
 					switch err {
 					case common.ErrNoClue: // No Clue: protocol not matches, and sniffer cannot determine whether there will be a match or not
-						totalAttempt++
+						noClueAttempts++
 					case protocol.ErrProtoNeedMoreData: // Protocol Need More Data: protocol matches, but need more data to complete sniffing
-						// in this case, do not add totalAttempt(allow to read until timeout)
+						// keep waiting for more payload until budget is exhausted
 					default:
 						return result, err
 					}
 				} else {
-					totalAttempt++
+					emptyReads++
 				}
-				if totalAttempt >= 2 || cacheDeadline <= 0 {
+				if noClueAttempts >= maxNoClueAttempts || emptyReads >= maxEmptyReads {
 					return nil, errSniffingTimeout
 				}
 			}
@@ -436,6 +519,7 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 	ob := outbounds[len(outbounds)-1]
 
 	var handler outbound.Handler
+	var ruleTag string
 
 	routingLink := routing_session.AsRoutingContext(ctx)
 	inTag := routingLink.GetInboundTag()
@@ -460,7 +544,8 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 				if route.GetRuleTag() == "" {
 					errors.LogInfo(ctx, "taking detour [", outTag, "] for [", destination, "]")
 				} else {
-					errors.LogInfo(ctx, "Hit route rule: [", route.GetRuleTag(), "] so taking detour [", outTag, "] for [", destination, "]")
+					ruleTag = route.GetRuleTag()
+					errors.LogInfo(ctx, "Hit route rule: [", ruleTag, "] so taking detour [", outTag, "] for [", destination, "]")
 				}
 				handler = h
 			} else {
@@ -493,13 +578,25 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 			} else if isPickRoute == 1 {
 				accessMessage.Detour = inTag + " ==> " + tag
 			} else if isPickRoute == 2 {
-				accessMessage.Detour = inTag + " -> " + tag
+				if ruleTag == "" {
+					accessMessage.Detour = inTag + " >[NONE]> " + tag
+				} else {
+					accessMessage.Detour = inTag + " >[" + ruleTag + "]> " + tag
+				}
 			} else {
 				accessMessage.Detour = inTag + " >> " + tag
 			}
+			if delay, ok := d.getObservedDelay(ctx, tag); ok {
+				accessMessage.Delay = delay
+			}
 		}
-		log.Record(accessMessage)
+		if accessMessage.To == nil {
+			accessMessage.To = destination
+		}
 	}
 
-	handler.Dispatch(ctx, link)
+	dispatchCtx := newOutboundDispatchContext(ctx, d.observatory, handler.Tag())
+	handler.Dispatch(dispatchCtx, link)
+	// 没有真实系统拨号成功时（如 blackhole 或提前失败），这里兜底补打一条 access log。
+	log.RecordAccessMessageFromContext(dispatchCtx)
 }

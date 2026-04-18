@@ -191,7 +191,7 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 			errors.LogInfoInner(ctx, err, "failed to resolve ip for target ", ob.Target.Address.Domain())
 			if h.senderSettings.TargetStrategy.ForceIP() {
 				err := errors.New("failed to resolve ip for target ", ob.Target.Address.Domain()).Base(err)
-				session.SubmitOutboundErrorToOriginator(ctx, err)
+				session.SubmitOutboundDialFailureToOriginator(ctx, err)
 				common.Interrupt(link.Writer)
 				common.Interrupt(link.Reader)
 				return
@@ -207,11 +207,12 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 		link.Reader = &buf.EndpointOverrideReader{Reader: link.Reader, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 		link.Writer = &buf.EndpointOverrideWriter{Writer: link.Writer, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 	}
+	relayLink := newRelayAwareLink(ctx, link)
 	if h.mux != nil {
 		test := func(err error) {
 			if err != nil {
 				err := errors.New("failed to process mux outbound traffic").Base(err)
-				session.SubmitOutboundErrorToOriginator(ctx, err)
+				session.SubmitOutboundMuxFailureToOriginator(ctx, err)
 				errors.LogInfo(ctx, err.Error())
 				common.Interrupt(link.Writer)
 				common.Interrupt(link.Reader)
@@ -230,16 +231,16 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 			if !h.xudp.Enabled {
 				goto out
 			}
-			test(h.xudp.Dispatch(ctx, link))
+			test(h.xudp.Dispatch(ctx, newRelayAwareLink(ctx, link)))
 			return
 		}
 		if h.mux.Enabled {
-			test(h.mux.Dispatch(ctx, link))
+			test(h.mux.Dispatch(ctx, newRelayAwareLink(ctx, link)))
 			return
 		}
 	}
 out:
-	err := h.proxy.Process(ctx, link, h)
+	err := h.proxy.Process(ctx, relayLink, h)
 	var errC error
 	if err != nil {
 		errC = errors.Cause(err)
@@ -250,17 +251,17 @@ out:
 	if err != nil {
 		// Ensure outbound ray is properly closed.
 		err := errors.New("failed to process outbound traffic").Base(err)
-		session.SubmitOutboundErrorToOriginator(ctx, err)
+		session.SubmitOutboundPreRelayProxyFailureToOriginator(ctx, err)
 		errors.LogInfo(ctx, err.Error())
-		common.Interrupt(link.Writer)
+		common.Interrupt(relayLink.Writer)
 	} else {
 		if errC != nil && goerrors.Is(errC, io.ErrClosedPipe) {
-			common.Interrupt(link.Writer)
+			common.Interrupt(relayLink.Writer)
 		} else {
-			common.Close(link.Writer)
+			common.Close(relayLink.Writer)
 		}
 	}
-	common.Interrupt(link.Reader)
+	common.Interrupt(relayLink.Reader)
 }
 
 func (h *Handler) DestIpAddress() net.IP {

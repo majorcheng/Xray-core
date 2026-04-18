@@ -126,6 +126,8 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
 	defer r.mu.Unlock()
 
 	if !shouldAppend {
+		// replace 模式需要同步刷新 domainStrategy，保持 routing reload 与冷启动初始化语义一致。
+		r.domainStrategy = config.DomainStrategy
 		for _, rule := range r.rules {
 			if rule.Webhook != nil {
 				rule.Webhook.Close()

@@ -31,6 +31,7 @@ type Observer struct {
 
 	statusLock sync.Mutex
 	status     []*OutboundStatus
+	overlay    *runtimeFeedbackOverlay
 
 	finished *done.Instance
 
@@ -39,7 +40,18 @@ type Observer struct {
 }
 
 func (o *Observer) GetObservation(ctx context.Context) (proto.Message, error) {
-	return &ObservationResult{Status: o.status}, nil
+	o.statusLock.Lock()
+	defer o.statusLock.Unlock()
+	return &ObservationResult{Status: o.snapshotObservationStatusLocked()}, nil
+}
+
+func (o *Observer) ReportOutboundSignal(signal *extension.OutboundSignal) {
+	if signal == nil || signal.OutboundTag == "" {
+		return
+	}
+	o.statusLock.Lock()
+	defer o.statusLock.Unlock()
+	o.overlay.apply(signal)
 }
 
 func (o *Observer) Type() interface{} {
@@ -115,7 +127,7 @@ func (o *Observer) background() {
 func (o *Observer) clearRemovedOutbounds(outbounds []string) {
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
-	if len(o.status) == 0 {
+	if len(o.status) == 0 && len(o.overlay.statusByTag) == 0 {
 		return
 	}
 	var pruned []*OutboundStatus
@@ -125,6 +137,7 @@ func (o *Observer) clearRemovedOutbounds(outbounds []string) {
 		}
 	}
 	o.status = pruned
+	o.overlay.prune(outbounds)
 }
 
 func (o *Observer) probe(outbound string) ProbeResult {
@@ -214,8 +227,30 @@ func (o *Observer) updateStatusForResult(outbound string, result *ProbeResult) {
 		status.LastErrorReason = ""
 	} else {
 		status.LastErrorReason = result.LastErrorReason
-		status.Delay = 99999999
+		status.Delay = deadDelayMs
 	}
+}
+
+func (o *Observer) snapshotObservationStatusLocked() []*OutboundStatus {
+	result := make([]*OutboundStatus, 0, len(o.status)+len(o.overlay.statusByTag))
+	seen := make(map[string]struct{}, len(o.status))
+	for _, status := range o.status {
+		if status == nil {
+			continue
+		}
+		merged := o.overlay.applyToStatus(status, nil)
+		result = append(result, merged)
+		seen[merged.OutboundTag] = struct{}{}
+	}
+	for tag := range o.overlay.statusByTag {
+		if _, found := seen[tag]; found {
+			continue
+		}
+		if synthetic := o.overlay.synthesize(tag); synthetic != nil {
+			result = append(result, synthetic)
+		}
+	}
+	return result
 }
 
 func (o *Observer) findStatusLocationLockHolderOnly(outbound string) int {
@@ -242,6 +277,7 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 		ctx:        ctx,
 		ohm:        outboundManager,
 		dispatcher: dispatcher,
+		overlay:    newRuntimeFeedbackOverlay(),
 	}, nil
 }
 
