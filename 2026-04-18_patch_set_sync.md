@@ -2,6 +2,7 @@
 
 基线提交：`b4650360d6a05c2842d2c7157fb8cb864bba637a`（`v26.4.17`）  
 目标仓库：`git@github.com:majorcheng/Xray-core.git`
+维护策略：源码提交进入 fork 分支，`patches/` 目录继续只保留在本地工作区，作为过渡期维护产物。
 
 ## 提交拆分
 
@@ -71,9 +72,10 @@
 验证：
 - `timeout 60s go test ./proxy/blackhole ./infra/conf -run 'Test(BlackholeHealthResponse|HealthResponse|Config_HealthResponseBuild)' -count=1`
 
-## patch 文件状态
+## 本地 patch 文件状态
 
-当前 `patches/README.md` 以及 `patches/01~05` 已与上述提交同步。  
+当前本地工作区中的 `patches/README.md` 以及 `patches/01~05` 已与上述源码提交同步。  
+这些 patch 文件继续保留在本地目录中，fork 分支只维护源码与说明文档。
 已在干净导出树基于 `b4650360` 重新执行：
 
 - `git apply --check patches/01_core_runtime_observability_reload.patch`
