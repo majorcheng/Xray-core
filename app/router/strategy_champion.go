@@ -31,23 +31,26 @@ func championTagForLog(tag string) string {
 	return tag
 }
 
-// ChampionStrategy keeps a "champion" outbound while avoiding frequent switches.
-// 它优先保住当前擂主，只有在观测结果连续满足阈值时才允许挑战者上位或 preferred 夺回。
+// ChampionStrategy keeps a stable "champion" outbound while avoiding frequent switches.
+// 它优先保住当前擂主，并且只统计不同观测快照上的连续胜场，避免单次抖动被高并发请求放大。
 type ChampionStrategy struct {
 	FallbackTag string
+	Settings    ChampionSettings
 
 	ctx         context.Context
 	observatory extension.Observatory
 
-	mu             sync.Mutex
-	index          int
-	lastTag        string
-	duelLossTag    string
-	duelLossStreak int
+	mu                 sync.Mutex
+	index              int
+	lastTag            string
+	duelLossTag        string
+	duelLossStreak     int
+	duelObservationKey championDuelKey
 }
 
 func (s *ChampionStrategy) InjectContext(ctx context.Context) {
 	s.ctx = ctx
+	s.Settings = s.Settings.normalized()
 	// champion 可以在无 observatory 时退化为普通轮询，因此使用 OptionalFeatures。
 	common.Must(core.OptionalFeatures(s.ctx, func(observatory extension.Observatory) error {
 		s.observatory = observatory
@@ -80,200 +83,173 @@ func (s *ChampionStrategy) PickOutbound(tags []string) string {
 	if len(tags) == 0 {
 		return ""
 	}
-
-	var selectedTag string
-	switchReason := ""
-	oldDelayMs := championUnknownDelay
-	newDelayMs := championUnknownDelay
-	allCandidatesDead := false
-	getDelay := func(string) int64 {
-		return championUnknownDelay
+	if obs, ok := s.loadObservation(tags); ok {
+		return s.pickObserved(tags, obs)
 	}
+	return s.pickRoundRobinFallback(tags)
+}
 
-	if s.observatory != nil {
-		observeReport, err := s.observatory.GetObservation(s.ctx)
-		if err == nil {
-			if result, ok := observeReport.(*observatory.ObservationResult); ok {
-				statusMap := make(map[string]*observatory.OutboundStatus, len(result.Status))
-				for _, outboundStatus := range result.Status {
-					statusMap[outboundStatus.OutboundTag] = outboundStatus
-				}
+func (s *ChampionStrategy) loadObservation(tags []string) (*championObservation, bool) {
+	if s.observatory == nil {
+		return nil, false
+	}
+	observeReport, err := s.observatory.GetObservation(s.ctx)
+	if err != nil {
+		return nil, false
+	}
+	result, ok := observeReport.(*observatory.ObservationResult)
+	if !ok {
+		return nil, false
+	}
+	return newChampionObservation(tags, result, s.Settings.normalized()), true
+}
 
-				candidateSet := make(map[string]struct{}, len(tags))
-				for _, candidate := range tags {
-					candidateSet[candidate] = struct{}{}
-				}
+func (s *ChampionStrategy) pickObserved(tags []string, obs *championObservation) string {
+	decision := s.selectObserved(obs)
+	if decision.allCandidatesDead {
+		return s.commitAllCandidatesDead(obs, decision.reason)
+	}
+	if decision.selectedTag == "" {
+		return s.pickRoundRobinFallback(tags)
+	}
+	return s.commitChampionSelection(obs, decision)
+}
 
-				getDelay = func(tag string) int64 {
-					stat, found := statusMap[tag]
-					if !found {
-						return championDefaultDelay
-					}
-					if stat.Alive {
-						return stat.Delay
-					}
-					return championInfiniteDelay
-				}
-
-				preferredTag := tags[0]
-				preferredDelay := getDelay(preferredTag)
-
-				anchorTag := preferredTag
-				anchorDelay := preferredDelay
-
-				s.mu.Lock()
-				last := s.lastTag
-				s.mu.Unlock()
-
-				// 只允许使用当前候选集合中的 lastTag，避免返回失效 tag。
-				if _, ok := candidateSet[last]; ok {
-					lastDelay := getDelay(last)
-					if lastDelay != championInfiniteDelay {
-						anchorTag = last
-						anchorDelay = lastDelay
-					}
-				}
-
-				bestTag := ""
-				bestDelay := championInfiniteDelay
-				for _, candidate := range tags {
-					delay := getDelay(candidate)
-					if delay < bestDelay {
-						bestDelay = delay
-						bestTag = candidate
-					}
-				}
-
-				// 全部候选都被观测为 dead，返回空让 Balancer 走 fallbackTag。
-				if bestDelay == championInfiniteDelay {
-					allCandidatesDead = true
-					switchReason = "all_candidates_dead"
-				} else if anchorDelay != championInfiniteDelay {
-					selectedTag = anchorTag
-
-					if anchorTag == preferredTag {
-						// preferred 仍是擂主时，只有足够明显更优且差距足够大，挑战者才允许连续抢位。
-						challengerWins := bestTag != "" && bestTag != anchorTag &&
-							bestDelay < (anchorDelay*4/7) &&
-							bestDelay < (anchorDelay-100)
-
-						if challengerWins {
-							s.mu.Lock()
-							if s.duelLossTag == bestTag {
-								if s.duelLossStreak < 3 {
-									s.duelLossStreak++
-								}
-							} else {
-								s.duelLossTag = bestTag
-								s.duelLossStreak = 1
-							}
-							shouldSwitch := s.duelLossTag == bestTag && s.duelLossStreak >= 3
-							s.mu.Unlock()
-
-							if shouldSwitch {
-								selectedTag = bestTag
-								switchReason = "challenger_promoted"
-								oldDelayMs = normalizeChampionDelay(anchorDelay)
-								newDelayMs = normalizeChampionDelay(bestDelay)
-							}
-						} else {
-							s.mu.Lock()
-							s.duelLossTag = ""
-							s.duelLossStreak = 0
-							s.mu.Unlock()
-						}
-					} else {
-						// preferred 夺回更保守：既要保持明显更优，也要与当前锚点足够接近，避免远距离抖动回切。
-						reclaimWins := preferredTag != "" &&
-							preferredDelay != championInfiniteDelay &&
-							preferredTag != anchorTag
-						if reclaimWins {
-							delta := anchorDelay - preferredDelay
-							if delta < 0 {
-								delta = -delta
-							}
-							reclaimWins = anchorDelay > (preferredDelay*4/7) && delta < 100
-						}
-
-						if reclaimWins {
-							s.mu.Lock()
-							if s.duelLossTag == preferredTag {
-								if s.duelLossStreak < 3 {
-									s.duelLossStreak++
-								}
-							} else {
-								s.duelLossTag = preferredTag
-								s.duelLossStreak = 1
-							}
-							shouldReclaim := s.duelLossTag == preferredTag && s.duelLossStreak >= 3
-							s.mu.Unlock()
-
-							if shouldReclaim {
-								selectedTag = preferredTag
-								switchReason = "preferred_reclaimed"
-								oldDelayMs = normalizeChampionDelay(anchorDelay)
-								newDelayMs = normalizeChampionDelay(preferredDelay)
-							}
-						} else {
-							s.mu.Lock()
-							s.duelLossTag = ""
-							s.duelLossStreak = 0
-							s.mu.Unlock()
-						}
-					}
-				} else {
-					s.mu.Lock()
-					s.duelLossTag = ""
-					s.duelLossStreak = 0
-					s.mu.Unlock()
-					selectedTag = bestTag
-					switchReason = "best_selected_from_non_anchor"
-					newDelayMs = normalizeChampionDelay(bestDelay)
-				}
-			}
+func (s *ChampionStrategy) selectObserved(obs *championObservation) championDecision {
+	preferredTag, preferredDelay := obs.preferred()
+	anchorTag, anchorDelay := obs.anchor(s.currentChampion())
+	bestTag, bestDelay := obs.best()
+	if bestDelay == championInfiniteDelay {
+		return championDecision{allCandidatesDead: true, reason: "all_candidates_dead"}
+	}
+	if anchorDelay == championInfiniteDelay {
+		s.resetDuel()
+		return championDecision{
+			selectedTag: bestTag,
+			reason:      "best_selected_from_non_anchor",
+			newDelayMs:  normalizeChampionDelay(bestDelay),
 		}
 	}
-
-	if allCandidatesDead {
-		s.mu.Lock()
-		oldTag := s.lastTag
-		s.lastTag = ""
-		s.duelLossTag = ""
-		s.duelLossStreak = 0
-		s.mu.Unlock()
-
-		if oldTag != "" {
-			oldDelayMs = normalizeChampionDelay(getDelay(oldTag))
-		}
-		newDelayMs = championUnknownDelay
-		s.logChampionSwitch(switchReason, oldTag, "", oldDelayMs, newDelayMs)
-		return ""
+	if anchorTag == preferredTag {
+		return s.decideChallenge(obs, anchorTag, anchorDelay, bestTag, bestDelay)
 	}
+	return s.decidePreferredReclaim(obs, preferredTag, preferredDelay, anchorTag, anchorDelay)
+}
 
-	if selectedTag == "" {
-		s.mu.Lock()
-		oldTag := s.lastTag
-		selectedTag = tags[s.index%len(tags)]
-		s.index = (s.index + 1) % len(tags)
-		s.lastTag = selectedTag
-		s.mu.Unlock()
-
-		s.logChampionSwitch("round_robin_fallback", oldTag, selectedTag, championUnknownDelay, championUnknownDelay)
-		return selectedTag
+func (s *ChampionStrategy) decideChallenge(obs *championObservation, anchorTag string, anchorDelay int64, bestTag string, bestDelay int64) championDecision {
+	if !obs.challengerWins(anchorTag, anchorDelay, bestTag, bestDelay) {
+		s.resetDuel()
+		return championDecision{selectedTag: anchorTag}
 	}
+	key := obs.duelKey(anchorTag, anchorDelay, bestTag, bestDelay)
+	if !s.recordDuelWin(bestTag, key, obs.settings.CandidateObservationCount) {
+		return championDecision{selectedTag: anchorTag}
+	}
+	return championDecision{
+		selectedTag: bestTag,
+		reason:      "challenger_promoted",
+		oldDelayMs:  normalizeChampionDelay(anchorDelay),
+		newDelayMs:  normalizeChampionDelay(bestDelay),
+	}
+}
 
+func (s *ChampionStrategy) decidePreferredReclaim(obs *championObservation, preferredTag string, preferredDelay int64, anchorTag string, anchorDelay int64) championDecision {
+	if !obs.preferredCanReclaim(preferredTag, preferredDelay, anchorTag, anchorDelay) {
+		s.resetDuel()
+		return championDecision{selectedTag: anchorTag}
+	}
+	key := obs.duelKey(anchorTag, anchorDelay, preferredTag, preferredDelay)
+	if !s.recordDuelWin(preferredTag, key, obs.settings.PreferredObservationCount) {
+		return championDecision{selectedTag: anchorTag}
+	}
+	return championDecision{
+		selectedTag: preferredTag,
+		reason:      "preferred_reclaimed",
+		oldDelayMs:  normalizeChampionDelay(anchorDelay),
+		newDelayMs:  normalizeChampionDelay(preferredDelay),
+	}
+}
+
+func (s *ChampionStrategy) currentChampion() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastTag
+}
+
+func (s *ChampionStrategy) pickRoundRobinFallback(tags []string) string {
 	s.mu.Lock()
 	oldTag := s.lastTag
+	selectedTag := tags[s.index%len(tags)]
+	s.index = (s.index + 1) % len(tags)
 	s.lastTag = selectedTag
+	s.clearDuelLocked()
 	s.mu.Unlock()
 
-	if oldDelayMs == championUnknownDelay && oldTag != "" {
-		oldDelayMs = normalizeChampionDelay(getDelay(oldTag))
-	}
-	if newDelayMs == championUnknownDelay && selectedTag != "" {
-		newDelayMs = normalizeChampionDelay(getDelay(selectedTag))
-	}
-
-	s.logChampionSwitch(switchReason, oldTag, selectedTag, oldDelayMs, newDelayMs)
+	s.logChampionSwitch("round_robin_fallback", oldTag, selectedTag, championUnknownDelay, championUnknownDelay)
 	return selectedTag
+}
+
+func (s *ChampionStrategy) commitAllCandidatesDead(obs *championObservation, reason string) string {
+	s.mu.Lock()
+	oldTag := s.lastTag
+	s.lastTag = ""
+	s.clearDuelLocked()
+	s.mu.Unlock()
+
+	oldDelayMs := championUnknownDelay
+	if oldTag != "" {
+		oldDelayMs = normalizeChampionDelay(obs.delayScore(oldTag))
+	}
+	s.logChampionSwitch(reason, oldTag, "", oldDelayMs, championUnknownDelay)
+	return ""
+}
+
+func (s *ChampionStrategy) commitChampionSelection(obs *championObservation, decision championDecision) string {
+	s.mu.Lock()
+	oldTag := s.lastTag
+	s.lastTag = decision.selectedTag
+	s.mu.Unlock()
+
+	oldDelayMs := decision.oldDelayMs
+	if oldDelayMs == championUnknownDelay && oldTag != "" {
+		oldDelayMs = normalizeChampionDelay(obs.delayScore(oldTag))
+	}
+	newDelayMs := decision.newDelayMs
+	if newDelayMs == championUnknownDelay && decision.selectedTag != "" {
+		newDelayMs = normalizeChampionDelay(obs.delayScore(decision.selectedTag))
+	}
+	s.logChampionSwitch(decision.reason, oldTag, decision.selectedTag, oldDelayMs, newDelayMs)
+	return decision.selectedTag
+}
+
+func (s *ChampionStrategy) recordDuelWin(tag string, key championDuelKey, threshold int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.duelLossTag != tag {
+		s.duelLossTag = tag
+		s.duelLossStreak = 1
+		s.duelObservationKey = key
+		return threshold <= 1
+	}
+	if s.duelObservationKey == key {
+		return s.duelLossStreak >= threshold
+	}
+	if s.duelLossStreak < threshold {
+		s.duelLossStreak++
+	}
+	s.duelObservationKey = key
+	return s.duelLossStreak >= threshold
+}
+
+func (s *ChampionStrategy) resetDuel() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearDuelLocked()
+}
+
+func (s *ChampionStrategy) clearDuelLocked() {
+	s.duelLossTag = ""
+	s.duelLossStreak = 0
+	s.duelObservationKey = championDuelKey{}
 }

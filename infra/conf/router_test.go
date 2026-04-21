@@ -277,3 +277,101 @@ func TestRouterConfigChampionStrategy(t *testing.T) {
 		},
 	})
 }
+
+func TestRouterConfigChampionStrategySettings(t *testing.T) {
+	createParser := func() func(string) (proto.Message, error) {
+		return func(s string) (proto.Message, error) {
+			config := new(RouterConfig)
+			if err := json.Unmarshal([]byte(s), config); err != nil {
+				return nil, err
+			}
+			return config.Build()
+		}
+	}
+
+	runMultiTestCase(t, []TestCase{
+		{
+			Input: `{
+				"balancers": [
+					{
+						"tag": "b1",
+						"selector": ["test"],
+						"strategy": {
+							"type": "champion",
+							"settings": {
+								"candidateObservationCount": 5,
+								"preferredObservationCount": 8,
+								"healthPingJitterScale": 1.5,
+								"preferredMaxDelayGap": "120ms"
+							}
+						},
+						"fallbackTag": "fall"
+					}
+				]
+			}`,
+			Parser: createParser(),
+			Output: &router.Config{
+				DomainStrategy: router.Config_AsIs,
+				BalancingRule: []*router.BalancingRule{
+					{
+						Tag:              "b1",
+						OutboundSelector: []string{"test"},
+						Strategy:         "champion",
+						StrategySettings: serial.ToTypedMessage(&router.StrategyChampionConfig{
+							CandidateObservationCount: 5,
+							PreferredObservationCount: 8,
+							HealthPingJitterScale:     1.5,
+							PreferredMaxDelayGap:      int64(120 * time.Millisecond),
+						}),
+						FallbackTag: "fall",
+					},
+				},
+			},
+		},
+	})
+}
+
+func TestRouterConfigChampionStrategyPartialSettings(t *testing.T) {
+	createParser := func() func(string) (proto.Message, error) {
+		return func(s string) (proto.Message, error) {
+			config := new(RouterConfig)
+			if err := json.Unmarshal([]byte(s), config); err != nil {
+				return nil, err
+			}
+			return config.Build()
+		}
+	}
+
+	runMultiTestCase(t, []TestCase{
+		{
+			Input: `{
+				"balancers": [
+					{
+						"tag": "b1",
+						"selector": ["test"],
+						"strategy": {
+							"type": "champion",
+							"settings": {
+								"candidateObservationCount": 5
+							}
+						}
+					}
+				]
+			}`,
+			Parser: createParser(),
+			Output: &router.Config{
+				DomainStrategy: router.Config_AsIs,
+				BalancingRule: []*router.BalancingRule{
+					{
+						Tag:              "b1",
+						OutboundSelector: []string{"test"},
+						Strategy:         "champion",
+						StrategySettings: serial.ToTypedMessage(&router.StrategyChampionConfig{
+							CandidateObservationCount: 5,
+						}),
+					},
+				},
+			},
+		},
+	})
+}

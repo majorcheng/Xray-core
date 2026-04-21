@@ -33,6 +33,7 @@
 - 2026-04-18：在隔离树为 observatory 增加运行时业务成功/失败覆盖层；dispatcher 通过 session 事件把真实拨号、mux 与 relay 建立期失败回写 observatory，业务成功可恢复，网站自身业务失败保持原语义。
 - 新增回归测试覆盖 dispatcher 事件上报、standard/burst observatory overlay、router 各 observatory 策略过滤 dead 节点，以及 relay 首包成功检测。
 - 2026-04-18：按用户确认只修复 `reload routing` 遗漏 `domainStrategy` 热更新；`app/router/router.go::ReloadRules` 的 replace 分支现已同步刷新 `r.domainStrategy`，并新增 `app/router/reload_rules_test.go` 覆盖 replace 与 append 两条语义。
+- 2026-04-18：合入上游 `XTLS/Xray-core#5971`；`common/geodata/ip_matcher.go::(*IPSetFactory).createFrom` 现已区分空地址族与 `/0` 全量 CIDR，`common/geodata/ip_matcher_test.go` 新增 `TestIPMatcherFullCIDR4` 与 `TestIPMatcherFullCIDR6` 回归覆盖；定向 `go test` 子集通过，`./common/geodata` 全量用例继续依赖仓库外部 `geoip/geosite` 资源文件。
 
 ## 2026-04-18 fork 提交整理
 
@@ -43,3 +44,43 @@
 - [x] 推送整理后的提交到 fork
 - [x] 确认 `patches/` 继续保持本地维护，不纳入 fork 分支
 - [x] 回退误入库的 `patches/` 目录提交
+
+## 2026-04-18 合入上游 PR 5971
+
+- [x] 核对当前分支、remote、merge-base 与 PR 5971 提交边界
+- [x] 评估 PR 5971 与本地 geodata 文件的冲突风险
+- [x] 合入 PR 5971 到当前 main
+- [x] 运行 geodata 受影响范围最小充分验证
+
+## 2026-04-21 champion 抗抖动优化
+
+- [x] 为 champion 增加可配置的抗抖动 strategy settings
+- [x] 在 champion 选主中引入 health ping 抖动惩罚与更保守的 preferred 回切
+- [x] 为 observatory 运行时反馈覆盖层增加失败/恢复抑抖
+- [x] 补齐 champion 与 observatory 的定向回归测试
+- [x] 完成最小充分验证并补充 review 小结
+
+### Review 小结
+
+- `champion` 现已支持独立 `strategy_settings`：`candidateObservationCount`、`preferredObservationCount`、`healthPingJitterScale`、`preferredMaxDelayGap`。
+- `app/router/strategy_champion.go` 现按“不同观测快照上的连续胜场”累计晋级与回切，避免同一份 observatory 结果被高并发请求重复记分。
+- `app/router/strategy_champion_support.go` 新增基于 `health_ping.average/deviation/fail` 的综合评分，抖动大、失败率高的线路会被自动惩罚。
+- `app/observatory/runtime_feedback.go` 现采用冷启动首个成功即 up、稳定期 2 次失败判 down、down 后 7 次成功恢复的抑抖语义；standard 与 burst observatory 均已接入。
+- 定向验证已通过：`timeout 60s go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion'`、`timeout 60s go test ./app/observatory ./app/observatory/burst ./infra/conf`。
+- 已知限制保持不变：`go test ./app/router` 全量仍受 `../../resources/geosite.dat` 缺失影响，因此本轮继续采用与 champion 变更直接相关的定向测试口径。
+
+## 2026-04-21 champion review finding 修复
+
+- [x] 复现并确认 runtime feedback failure streak 跨新探测累积
+- [x] 修复 overlay 在较新 base probe 和 health ping 到达后的状态重置
+- [x] 修复 champion partial settings 默认值合并语义
+- [x] 补充 observatory 与 champion partial settings 回归测试
+- [x] 运行 review 后的最小充分验证并补充结论
+
+### Review 小结
+
+- `app/observatory/runtime_feedback.go` 现已在较新的 base probe / health ping 覆盖旧 overlay 时重置运行时 streak，单次新失败从新的探测周期重新计数。
+- `app/observatory/burst/burstobserver.go::ReportOutboundSignal` 现已把 `LastUpdateUnixNano` 传给 overlay，健康探测与业务反馈的新旧比较保持纳秒级精度。
+- `app/router/strategy_champion_support.go::ChampionSettings.normalized` 现已把 `HealthPingJitterScale <= 0` 统一收口为默认值，partial settings 不会静默冲掉抖动惩罚。
+- 新增回归测试覆盖 standard observer、burst observer 与 champion partial settings 三条 review 路径。
+- 定向验证已通过：`timeout 60s go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion'`、`timeout 60s go test ./app/observatory ./app/observatory/burst ./infra/conf`。

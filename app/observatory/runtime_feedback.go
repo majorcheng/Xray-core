@@ -9,12 +9,20 @@ import (
 
 const deadDelayMs int64 = 99999999
 
+const (
+	runtimeFeedbackDownThreshold    = 2
+	runtimeFeedbackRecoverThreshold = 7
+)
+
 type runtimeFeedbackState struct {
 	Alive          bool
+	EverAlive      bool
 	Delay          int64
 	Reason         string
 	LastTryTime    int64
 	LastSeenTime   int64
+	SuccessStreak  int
+	FailureStreak  int
 	lastTryUnixNs  int64
 	lastSeenUnixNs int64
 }
@@ -37,7 +45,16 @@ func NewRuntimeFeedbackOverlayBridge() *RuntimeFeedbackOverlayBridge {
 }
 
 func (b *RuntimeFeedbackOverlayBridge) Apply(signal *extension.OutboundSignal) {
-	b.overlay.apply(signal)
+	b.overlay.applyWithStatus(signal, nil, 0)
+}
+
+func (b *RuntimeFeedbackOverlayBridge) ApplyWithStatus(signal *extension.OutboundSignal, base *OutboundStatus) {
+	b.overlay.applyWithStatus(signal, base, outboundStatusTimestamp(base, nil))
+}
+
+// ApplyWithStatusAt 允许调用方传入更精确的 base 时间戳，避免秒级时间戳掩盖新探测结果。
+func (b *RuntimeFeedbackOverlayBridge) ApplyWithStatusAt(signal *extension.OutboundSignal, base *OutboundStatus, baseTimestamp int64) {
+	b.overlay.applyWithStatus(signal, base, baseTimestamp)
 }
 
 func (b *RuntimeFeedbackOverlayBridge) Merge(base []*OutboundStatus) []*OutboundStatus {
@@ -65,6 +82,10 @@ func (o *runtimeFeedbackOverlay) prune(tags []string) {
 }
 
 func (o *runtimeFeedbackOverlay) apply(signal *extension.OutboundSignal) {
+	o.applyWithStatus(signal, nil, 0)
+}
+
+func (o *runtimeFeedbackOverlay) applyWithStatus(signal *extension.OutboundSignal, base *OutboundStatus, baseTimestamp int64) {
 	if signal == nil || signal.OutboundTag == "" {
 		return
 	}
@@ -72,25 +93,88 @@ func (o *runtimeFeedbackOverlay) apply(signal *extension.OutboundSignal) {
 	if !found {
 		state = &runtimeFeedbackState{}
 		o.statusByTag[signal.OutboundTag] = state
+		state.seedFromBase(base)
+	} else {
+		state.refreshFromBase(base, baseTimestamp)
 	}
 	now := time.Now()
 	state.LastTryTime = now.Unix()
 	state.lastTryUnixNs = now.UnixNano()
 	switch signal.Kind {
 	case extension.OutboundSignalDialFailure, extension.OutboundSignalMuxFailure, extension.OutboundSignalPreRelayProxyFailure:
-		state.Alive = false
-		state.Delay = deadDelayMs
-		state.Reason = signal.Reason
-	case extension.OutboundSignalDialSuccess, extension.OutboundSignalRelaySuccess:
-		state.Alive = true
-		if signal.DelayMs > 0 {
-			state.Delay = signal.DelayMs
-		} else {
-			state.Delay = 0
+		state.FailureStreak++
+		state.SuccessStreak = 0
+		if !state.EverAlive || state.FailureStreak >= runtimeFeedbackDownThreshold {
+			state.Alive = false
+			state.Delay = deadDelayMs
+			state.Reason = signal.Reason
 		}
-		state.Reason = ""
-		state.LastSeenTime = now.Unix()
-		state.lastSeenUnixNs = now.UnixNano()
+	case extension.OutboundSignalDialSuccess, extension.OutboundSignalRelaySuccess:
+		state.SuccessStreak++
+		state.FailureStreak = 0
+		if !state.EverAlive || state.Alive || state.SuccessStreak >= runtimeFeedbackRecoverThreshold {
+			state.Alive = true
+			state.EverAlive = true
+			if signal.DelayMs > 0 {
+				state.Delay = signal.DelayMs
+			} else {
+				state.Delay = 0
+			}
+			state.Reason = ""
+			state.LastSeenTime = now.Unix()
+			state.lastSeenUnixNs = now.UnixNano()
+		}
+	}
+}
+
+func (s *runtimeFeedbackState) seedFromBase(base *OutboundStatus) {
+	if base == nil {
+		return
+	}
+	s.resetFromBase(base, outboundStatusTimestamp(base, nil))
+}
+
+// refreshFromBase 用更近的探测结果覆盖旧业务态，避免失败 streak 跨探测周期累积。
+func (s *runtimeFeedbackState) refreshFromBase(base *OutboundStatus, baseTimestamp int64) {
+	if base == nil || baseTimestamp <= 0 {
+		return
+	}
+	if baseTimestamp < runtimeFeedbackTimestamp(s) {
+		return
+	}
+	s.resetFromBase(base, baseTimestamp)
+}
+
+// resetFromBase 按最新探测结果重置 overlay 状态，并清空业务成功/失败 streak。
+func (s *runtimeFeedbackState) resetFromBase(base *OutboundStatus, baseTimestamp int64) {
+	if base == nil {
+		return
+	}
+	if baseTimestamp <= 0 {
+		baseTimestamp = outboundStatusTimestamp(base, nil)
+	}
+	baseTryTime := base.LastTryTime
+	if baseTryTime == 0 && baseTimestamp > 0 {
+		baseTryTime = baseTimestamp / int64(time.Second)
+	}
+	baseSeenTime := base.LastSeenTime
+	if baseSeenTime == 0 && base.Alive && baseTimestamp > 0 {
+		baseSeenTime = baseTimestamp / int64(time.Second)
+	}
+	s.Alive = base.Alive
+	s.Delay = base.Delay
+	s.Reason = base.LastErrorReason
+	s.LastTryTime = baseTryTime
+	s.LastSeenTime = baseSeenTime
+	s.lastTryUnixNs = baseTimestamp
+	s.lastSeenUnixNs = baseSeenTime * int64(time.Second)
+	if base.Alive && baseTimestamp > s.lastSeenUnixNs {
+		s.lastSeenUnixNs = baseTimestamp
+	}
+	s.SuccessStreak = 0
+	s.FailureStreak = 0
+	if base.Alive || base.LastSeenTime > 0 || base.HealthPing != nil {
+		s.EverAlive = true
 	}
 }
 
@@ -126,7 +210,13 @@ func (o *runtimeFeedbackOverlay) applyToStatus(base *OutboundStatus, timestamps 
 	}
 	baseTimestamp := outboundStatusTimestamp(base, timestamps)
 	if baseTimestamp >= runtimeFeedbackTimestamp(state) {
+		state.resetFromBase(base, baseTimestamp)
 		return cloneOutboundStatus(base)
+	}
+	if base.Alive && state.FailureStreak > 0 && state.FailureStreak < runtimeFeedbackDownThreshold {
+		cloned := cloneOutboundStatus(base)
+		cloned.LastTryTime = maxInt64(cloned.LastTryTime, state.LastTryTime)
+		return cloned
 	}
 	cloned := cloneOutboundStatus(base)
 	cloned.LastTryTime = maxInt64(cloned.LastTryTime, state.LastTryTime)

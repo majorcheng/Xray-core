@@ -40,7 +40,8 @@ func (o *Observer) ReportOutboundSignal(signal *extension.OutboundSignal) {
 	}
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
-	o.overlay.Apply(signal)
+	base, baseTimestamp := o.baseStatusSnapshotForTagLocked(signal.OutboundTag)
+	o.overlay.ApplyWithStatusAt(signal, base, baseTimestamp)
 }
 
 func (o *Observer) Check(tag []string) {
@@ -79,6 +80,35 @@ func (o *Observer) createBaseResultLocked() ([]*observatory.OutboundStatus, map[
 		result = append(result, &status)
 	}
 	return result, timestamps
+}
+
+func (o *Observer) baseStatusSnapshotForTagLocked(tag string) (*observatory.OutboundStatus, int64) {
+	o.hp.access.Lock()
+	defer o.hp.access.Unlock()
+	if o.hp.Results == nil {
+		return nil, 0
+	}
+	value, found := o.hp.Results[tag]
+	if !found {
+		return nil, 0
+	}
+	stats := value.GetWithCache()
+	return &observatory.OutboundStatus{
+		Alive:           stats.All != stats.Fail,
+		Delay:           stats.Average.Milliseconds(),
+		LastErrorReason: "",
+		OutboundTag:     tag,
+		LastSeenTime:    0,
+		LastTryTime:     0,
+		HealthPing: &observatory.HealthPingMeasurementResult{
+			All:       int64(stats.All),
+			Fail:      int64(stats.Fail),
+			Deviation: int64(stats.Deviation),
+			Average:   int64(stats.Average),
+			Max:       int64(stats.Max),
+			Min:       int64(stats.Min),
+		},
+	}, value.LastUpdateUnixNano()
 }
 
 func (o *Observer) Type() interface{} {

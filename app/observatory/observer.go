@@ -51,7 +51,7 @@ func (o *Observer) ReportOutboundSignal(signal *extension.OutboundSignal) {
 	}
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
-	o.overlay.apply(signal)
+	o.overlay.applyWithStatus(signal, o.statusForTagLocked(signal.OutboundTag), 0)
 }
 
 func (o *Observer) Type() interface{} {
@@ -260,6 +260,14 @@ func (o *Observer) findStatusLocationLockHolderOnly(outbound string) int {
 		}
 	}
 	return -1
+}
+
+func (o *Observer) statusForTagLocked(outbound string) *OutboundStatus {
+	location := o.findStatusLocationLockHolderOnly(outbound)
+	if location == -1 {
+		return nil
+	}
+	return o.status[location]
 }
 
 func New(ctx context.Context, config *Config) (*Observer, error) {

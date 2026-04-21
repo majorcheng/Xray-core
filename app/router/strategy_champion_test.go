@@ -6,9 +6,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/xtls/xray-core/app/observatory"
 	clog "github.com/xtls/xray-core/common/log"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/features/extension"
 	"google.golang.org/protobuf/proto"
 )
@@ -106,15 +108,23 @@ func TestChampionStrategySwitchLogRoundRobinFallback(t *testing.T) {
 func TestChampionStrategySwitchLogChallengerPromoted(t *testing.T) {
 	strategy := &ChampionStrategy{
 		ctx: context.Background(),
+		Settings: ChampionSettings{
+			CandidateObservationCount: 3,
+			PreferredObservationCount: 3,
+			HealthPingJitterScale:     0,
+			PreferredMaxDelayGap:      100 * time.Millisecond,
+		},
 		observatory: &staticObservatory{
 			status: []*observatory.OutboundStatus{
-				{OutboundTag: "a", Alive: true, Delay: 400},
-				{OutboundTag: "b", Alive: true, Delay: 80},
+				{OutboundTag: "a", Alive: true, Delay: 400, LastTryTime: 1},
+				{OutboundTag: "b", Alive: true, Delay: 80, LastTryTime: 1},
 			},
 		},
 	}
 	withLogCapture(t, func(logs *captureLogHandler) {
-		for i := 0; i < 3; i++ {
+		for i := int64(1); i <= 3; i++ {
+			strategy.observatory.(*staticObservatory).status[0].LastTryTime = i
+			strategy.observatory.(*staticObservatory).status[1].LastTryTime = i
 			strategy.PickOutbound([]string{"a", "b"})
 		}
 		requireLogContains(t, logs,
@@ -190,6 +200,12 @@ func TestChampionStrategyPreferredReclaimNeedsCloseGap(t *testing.T) {
 	strategy := &ChampionStrategy{
 		ctx:     context.Background(),
 		lastTag: "b",
+		Settings: ChampionSettings{
+			CandidateObservationCount: 3,
+			PreferredObservationCount: 3,
+			HealthPingJitterScale:     0,
+			PreferredMaxDelayGap:      80 * time.Millisecond,
+		},
 		observatory: &staticObservatory{
 			status: []*observatory.OutboundStatus{
 				{OutboundTag: "a", Alive: true, Delay: 120},
@@ -209,21 +225,92 @@ func TestChampionStrategyPreferredReclaimWhenCloseAndWithinThreshold(t *testing.
 	strategy := &ChampionStrategy{
 		ctx:     context.Background(),
 		lastTag: "b",
+		Settings: ChampionSettings{
+			CandidateObservationCount: 3,
+			PreferredObservationCount: 3,
+			HealthPingJitterScale:     0,
+			PreferredMaxDelayGap:      80 * time.Millisecond,
+		},
 		observatory: &staticObservatory{
 			status: []*observatory.OutboundStatus{
-				{OutboundTag: "a", Alive: true, Delay: 90},
-				{OutboundTag: "b", Alive: true, Delay: 150},
+				{OutboundTag: "a", Alive: true, Delay: 90, LastTryTime: 1},
+				{OutboundTag: "b", Alive: true, Delay: 150, LastTryTime: 1},
 			},
 		},
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := int64(1); i <= 2; i++ {
+		strategy.observatory.(*staticObservatory).status[0].LastTryTime = i
+		strategy.observatory.(*staticObservatory).status[1].LastTryTime = i
 		if tag := strategy.PickOutbound([]string{"a", "b"}); tag != "b" {
 			t.Fatalf("preferred should keep building reclaim streak before switch, got=%q at round=%d", tag, i)
 		}
 	}
+	strategy.observatory.(*staticObservatory).status[0].LastTryTime = 3
+	strategy.observatory.(*staticObservatory).status[1].LastTryTime = 3
 	if tag := strategy.PickOutbound([]string{"a", "b"}); tag != "a" {
 		t.Fatalf("preferred should reclaim after 3 close wins, got=%q", tag)
+	}
+}
+
+func TestChampionStrategyRequiresDistinctObservationsForPromotion(t *testing.T) {
+	strategy := &ChampionStrategy{
+		ctx: context.Background(),
+		Settings: ChampionSettings{
+			CandidateObservationCount: 3,
+			PreferredObservationCount: 3,
+			HealthPingJitterScale:     0,
+			PreferredMaxDelayGap:      80 * time.Millisecond,
+		},
+		observatory: &staticObservatory{
+			status: []*observatory.OutboundStatus{
+				{OutboundTag: "a", Alive: true, Delay: 400, LastTryTime: 1},
+				{OutboundTag: "b", Alive: true, Delay: 80, LastTryTime: 1},
+			},
+		},
+	}
+	for i := 0; i < 5; i++ {
+		if tag := strategy.PickOutbound([]string{"a", "b"}); tag != "a" {
+			t.Fatalf("expected champion to stay on old tag during same observation, got=%q at round=%d", tag, i)
+		}
+	}
+}
+
+func TestChampionStrategyHealthPingJitterPenaltyPrefersStableNode(t *testing.T) {
+	strategy := &ChampionStrategy{
+		ctx: context.Background(),
+		Settings: ChampionSettings{
+			CandidateObservationCount: 3,
+			PreferredObservationCount: 3,
+			HealthPingJitterScale:     1,
+			PreferredMaxDelayGap:      80 * time.Millisecond,
+		},
+		observatory: &staticObservatory{
+			status: []*observatory.OutboundStatus{
+				{
+					OutboundTag: "a",
+					Alive:       true,
+					Delay:       70,
+					LastTryTime: 1,
+					HealthPing:  &observatory.HealthPingMeasurementResult{Average: 70 * int64(time.Millisecond), Deviation: 180 * int64(time.Millisecond), All: 10},
+				},
+				{
+					OutboundTag: "b",
+					Alive:       true,
+					Delay:       120,
+					LastTryTime: 1,
+					HealthPing:  &observatory.HealthPingMeasurementResult{Average: 120 * int64(time.Millisecond), Deviation: 10 * int64(time.Millisecond), All: 10},
+				},
+			},
+		},
+	}
+	for i := int64(1); i <= 3; i++ {
+		strategy.observatory.(*staticObservatory).status[0].LastTryTime = i
+		strategy.observatory.(*staticObservatory).status[1].LastTryTime = i
+		strategy.PickOutbound([]string{"a", "b"})
+	}
+	if tag := strategy.currentChampion(); tag != "b" {
+		t.Fatalf("expected stable node to become champion, got=%q", tag)
 	}
 }
 
@@ -238,5 +325,68 @@ func TestBalancingRuleBuildChampion(t *testing.T) {
 	}
 	if _, ok := balancer.strategy.(*ChampionStrategy); !ok {
 		t.Fatalf("unexpected strategy type: %T", balancer.strategy)
+	}
+}
+
+func TestBalancingRuleBuildChampionSettings(t *testing.T) {
+	rule := &BalancingRule{
+		Strategy:         "champion",
+		OutboundSelector: []string{"a"},
+		StrategySettings: serial.ToTypedMessage(&StrategyChampionConfig{
+			CandidateObservationCount: 5,
+			PreferredObservationCount: 8,
+			HealthPingJitterScale:     1.5,
+			PreferredMaxDelayGap:      int64(120 * time.Millisecond),
+		}),
+	}
+	balancer, err := rule.Build(nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected build error: %v", err)
+	}
+	strategy, ok := balancer.strategy.(*ChampionStrategy)
+	if !ok {
+		t.Fatalf("unexpected strategy type: %T", balancer.strategy)
+	}
+	if strategy.Settings.CandidateObservationCount != 5 {
+		t.Fatalf("unexpected candidate observation count: %d", strategy.Settings.CandidateObservationCount)
+	}
+	if strategy.Settings.PreferredObservationCount != 8 {
+		t.Fatalf("unexpected preferred observation count: %d", strategy.Settings.PreferredObservationCount)
+	}
+	if strategy.Settings.HealthPingJitterScale != 1.5 {
+		t.Fatalf("unexpected jitter scale: %v", strategy.Settings.HealthPingJitterScale)
+	}
+	if strategy.Settings.PreferredMaxDelayGap != 120*time.Millisecond {
+		t.Fatalf("unexpected preferred max delay gap: %v", strategy.Settings.PreferredMaxDelayGap)
+	}
+}
+
+func TestBalancingRuleBuildChampionPartialSettingsKeepDefaults(t *testing.T) {
+	rule := &BalancingRule{
+		Strategy:         "champion",
+		OutboundSelector: []string{"a"},
+		StrategySettings: serial.ToTypedMessage(&StrategyChampionConfig{
+			CandidateObservationCount: 5,
+		}),
+	}
+	balancer, err := rule.Build(nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected build error: %v", err)
+	}
+	strategy, ok := balancer.strategy.(*ChampionStrategy)
+	if !ok {
+		t.Fatalf("unexpected strategy type: %T", balancer.strategy)
+	}
+	if strategy.Settings.CandidateObservationCount != 5 {
+		t.Fatalf("unexpected candidate observation count: %d", strategy.Settings.CandidateObservationCount)
+	}
+	if strategy.Settings.PreferredObservationCount != defaultChampionSettings().PreferredObservationCount {
+		t.Fatalf("unexpected preferred observation count: %d", strategy.Settings.PreferredObservationCount)
+	}
+	if strategy.Settings.HealthPingJitterScale != defaultChampionSettings().HealthPingJitterScale {
+		t.Fatalf("unexpected jitter scale: %v", strategy.Settings.HealthPingJitterScale)
+	}
+	if strategy.Settings.PreferredMaxDelayGap != defaultChampionSettings().PreferredMaxDelayGap {
+		t.Fatalf("unexpected preferred max delay gap: %v", strategy.Settings.PreferredMaxDelayGap)
 	}
 }

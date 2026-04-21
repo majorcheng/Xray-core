@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/features/outbound"
@@ -135,9 +136,26 @@ func (br *BalancingRule) Build(ohm outbound.Manager, dispatcher routing.Dispatch
 			ohm:         ohm,
 		}, nil
 	case "champion":
+		settings := defaultChampionSettings()
+		if br.StrategySettings != nil {
+			i, err := br.StrategySettings.GetInstance()
+			if err != nil {
+				return nil, err
+			}
+			s, ok := i.(*StrategyChampionConfig)
+			if !ok {
+				return nil, errors.New("not a StrategyChampionConfig").AtError()
+			}
+			settings = ChampionSettings{
+				CandidateObservationCount: int(s.CandidateObservationCount),
+				PreferredObservationCount: int(s.PreferredObservationCount),
+				HealthPingJitterScale:     float64(s.HealthPingJitterScale),
+				PreferredMaxDelayGap:      time.Duration(s.PreferredMaxDelayGap),
+			}.normalized()
+		}
 		return &Balancer{
 			selectors:   br.OutboundSelector,
-			strategy:    &ChampionStrategy{FallbackTag: br.FallbackTag},
+			strategy:    &ChampionStrategy{FallbackTag: br.FallbackTag, Settings: settings},
 			fallbackTag: br.FallbackTag,
 			ohm:         ohm,
 		}, nil
