@@ -84,3 +84,18 @@
 - `app/router/strategy_champion_support.go::ChampionSettings.normalized` 现已把 `HealthPingJitterScale <= 0` 统一收口为默认值，partial settings 不会静默冲掉抖动惩罚。
 - 新增回归测试覆盖 standard observer、burst observer 与 champion partial settings 三条 review 路径。
 - 定向验证已通过：`timeout 60s go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion'`、`timeout 60s go test ./app/observatory ./app/observatory/burst ./infra/conf`。
+
+## 2026-04-23 observatory 未监控 tag 严格忽略 runtime feedback
+
+- [x] 复核 standard / burst observatory 的 runtime feedback 入口与监控集合边界
+- [x] 为未纳入 subject selector 的 tag 增加严格忽略逻辑
+- [x] 补充 standard / burst observatory 对未监控 tag 忽略与监控内 tag 保留的回归测试
+- [x] 运行 observatory 相关最小充分验证
+
+### Review 小结
+
+- `app/observatory/observer.go::(*Observer).ReportOutboundSignal` 与 `app/observatory/burst/burstobserver.go::(*Observer).ReportOutboundSignal` 现已先校验 tag 是否属于当前 `subject_selector` 命中的监控集合；未监控 tag 的业务成功/失败反馈会被直接忽略，不再 synthesize 回 `ObservationResult`。
+- standard / burst observatory 当前会在每次 runtime feedback 到达时按最新 selector 快照刷新 `monitored`，不再只在空集合时刷新；因此动态新增的监控 tag 可立即接收反馈，已移除 tag 也会立即被拒绝。
+- 新增回归测试覆盖三条边界：未监控 tag 必须忽略、监控内但尚未形成 base status 的 tag 仍可接收 runtime feedback、以及 `subject_selector` 命中集合在非空缓存状态下继续变化时也会被立即刷新。
+- 定向验证已通过：`timeout 60s go test ./app/observatory ./app/observatory/burst -count=1`、`timeout 60s go test ./app/router -run "TestChampion|TestBalancingRuleBuildChampion" -count=1`。
+- 额外尝试过 `timeout 60s go test ./app/router -run "TestChampion|TestBalancingRuleBuildChampion|TestSimpleBalancer" -count=1`；其中 `TestSimpleBalancer` 仍因测试上下文未注入 core instance 在当前仓库基线下失败，与本轮 observatory 改动无直接关系，因此未纳入本次验收口径。

@@ -22,6 +22,7 @@ type Observer struct {
 	statusLock sync.Mutex
 	hp         *HealthPing
 	overlay    *observatory.RuntimeFeedbackOverlayBridge
+	monitored  map[string]struct{}
 
 	finished *done.Instance
 
@@ -35,11 +36,14 @@ func (o *Observer) GetObservation(ctx context.Context) (proto.Message, error) {
 }
 
 func (o *Observer) ReportOutboundSignal(signal *extension.OutboundSignal) {
-	if signal == nil || signal.OutboundTag == "" {
+	if signal == nil || signal.OutboundTag == "" || !o.acceptsRuntimeFeedback(signal.OutboundTag) {
 		return
 	}
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
+	if !o.monitoredTagLocked(signal.OutboundTag) {
+		return
+	}
 	base, baseTimestamp := o.baseStatusSnapshotForTagLocked(signal.OutboundTag)
 	o.overlay.ApplyWithStatusAt(signal, base, baseTimestamp)
 }
@@ -111,6 +115,41 @@ func (o *Observer) baseStatusSnapshotForTagLocked(tag string) (*observatory.Outb
 	}, value.LastUpdateUnixNano()
 }
 
+// acceptsRuntimeFeedback 只接收当前 subject selector 命中的 tag，避免未监控出站进入 overlay。
+func (o *Observer) acceptsRuntimeFeedback(tag string) bool {
+	outbounds, ok := o.currentObservedOutbounds()
+	if !ok {
+		return false
+	}
+	o.statusLock.Lock()
+	defer o.statusLock.Unlock()
+	o.setMonitoredTagsLocked(outbounds)
+	return o.monitoredTagLocked(tag)
+}
+
+func (o *Observer) currentObservedOutbounds() ([]string, bool) {
+	if o.config == nil || len(o.config.SubjectSelector) == 0 {
+		return nil, false
+	}
+	hs, ok := o.ohm.(outbound.HandlerSelector)
+	if !ok {
+		return nil, false
+	}
+	return hs.Select(o.config.SubjectSelector), true
+}
+
+func (o *Observer) setMonitoredTagsLocked(outbounds []string) {
+	o.monitored = make(map[string]struct{}, len(outbounds))
+	for _, tag := range outbounds {
+		o.monitored[tag] = struct{}{}
+	}
+}
+
+func (o *Observer) monitoredTagLocked(tag string) bool {
+	_, ok := o.monitored[tag]
+	return ok
+}
+
 func (o *Observer) Type() interface{} {
 	return extension.ObservatoryType()
 }
@@ -126,6 +165,7 @@ func (o *Observer) Start() error {
 
 			outbounds := hs.Select(o.config.SubjectSelector)
 			o.statusLock.Lock()
+			o.setMonitoredTagsLocked(outbounds)
 			o.overlay.Prune(outbounds)
 			o.statusLock.Unlock()
 			return outbounds, nil

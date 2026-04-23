@@ -32,6 +32,7 @@ type Observer struct {
 	statusLock sync.Mutex
 	status     []*OutboundStatus
 	overlay    *runtimeFeedbackOverlay
+	monitored  map[string]struct{}
 
 	finished *done.Instance
 
@@ -46,11 +47,14 @@ func (o *Observer) GetObservation(ctx context.Context) (proto.Message, error) {
 }
 
 func (o *Observer) ReportOutboundSignal(signal *extension.OutboundSignal) {
-	if signal == nil || signal.OutboundTag == "" {
+	if signal == nil || signal.OutboundTag == "" || !o.acceptsRuntimeFeedback(signal.OutboundTag) {
 		return
 	}
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
+	if !o.monitoredTagLocked(signal.OutboundTag) {
+		return
+	}
 	o.overlay.applyWithStatus(signal, o.statusForTagLocked(signal.OutboundTag), 0)
 }
 
@@ -127,6 +131,7 @@ func (o *Observer) background() {
 func (o *Observer) clearRemovedOutbounds(outbounds []string) {
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
+	o.setMonitoredTagsLocked(outbounds)
 	if len(o.status) == 0 && len(o.overlay.statusByTag) == 0 {
 		return
 	}
@@ -138,6 +143,41 @@ func (o *Observer) clearRemovedOutbounds(outbounds []string) {
 	}
 	o.status = pruned
 	o.overlay.prune(outbounds)
+}
+
+// acceptsRuntimeFeedback 只接收当前 subject selector 命中的 tag，避免未监控出站污染观测结果。
+func (o *Observer) acceptsRuntimeFeedback(tag string) bool {
+	outbounds, ok := o.currentObservedOutbounds()
+	if !ok {
+		return false
+	}
+	o.statusLock.Lock()
+	defer o.statusLock.Unlock()
+	o.setMonitoredTagsLocked(outbounds)
+	return o.monitoredTagLocked(tag)
+}
+
+func (o *Observer) currentObservedOutbounds() ([]string, bool) {
+	if o.config == nil || len(o.config.SubjectSelector) == 0 {
+		return nil, false
+	}
+	hs, ok := o.ohm.(outbound.HandlerSelector)
+	if !ok {
+		return nil, false
+	}
+	return hs.Select(o.config.SubjectSelector), true
+}
+
+func (o *Observer) setMonitoredTagsLocked(outbounds []string) {
+	o.monitored = make(map[string]struct{}, len(outbounds))
+	for _, tag := range outbounds {
+		o.monitored[tag] = struct{}{}
+	}
+}
+
+func (o *Observer) monitoredTagLocked(tag string) bool {
+	_, ok := o.monitored[tag]
+	return ok
 }
 
 func (o *Observer) probe(outbound string) ProbeResult {

@@ -5,7 +5,25 @@ import (
 	"time"
 
 	"github.com/xtls/xray-core/features/extension"
+	"github.com/xtls/xray-core/features/outbound"
 )
+
+type staticOutboundSelector struct {
+	outbound.Manager
+	selected []string
+}
+
+func (s *staticOutboundSelector) Select([]string) []string {
+	return append([]string(nil), s.selected...)
+}
+
+func newMonitoredObserver() *Observer {
+	return &Observer{
+		config:  &Config{SubjectSelector: []string{"proxy-"}},
+		ohm:     &staticOutboundSelector{selected: []string{"proxy-a"}},
+		overlay: newRuntimeFeedbackOverlay(),
+	}
+}
 
 func TestObserverUpdateStatusPrunesStaleOutbounds(t *testing.T) {
 	observer := &Observer{
@@ -72,7 +90,7 @@ func TestObserverUpdateStatusClearsWhenNoOutboundsRemain(t *testing.T) {
 }
 
 func TestObserverBusinessFailureOverridesProbeStatus(t *testing.T) {
-	observer := &Observer{overlay: newRuntimeFeedbackOverlay()}
+	observer := newMonitoredObserver()
 	observer.ReportOutboundSignal(&extension.OutboundSignal{OutboundTag: "proxy-a", Kind: extension.OutboundSignalDialFailure, Reason: "dial failed"})
 
 	result := observer.snapshotObservationStatusLocked()
@@ -90,8 +108,62 @@ func TestObserverBusinessFailureOverridesProbeStatus(t *testing.T) {
 	}
 }
 
+func TestObserverBusinessFailureIgnoresUnmonitoredTag(t *testing.T) {
+	observer := &Observer{
+		config:    &Config{SubjectSelector: []string{"proxy-"}},
+		ohm:       &staticOutboundSelector{selected: []string{"proxy-a"}},
+		overlay:   newRuntimeFeedbackOverlay(),
+		monitored: nil,
+	}
+
+	observer.ReportOutboundSignal(&extension.OutboundSignal{OutboundTag: "direct", Kind: extension.OutboundSignalDialFailure, Reason: "dial failed"})
+
+	if result := observer.snapshotObservationStatusLocked(); len(result) != 0 {
+		t.Fatalf("expected unmonitored tag to be ignored, got %d statuses", len(result))
+	}
+}
+
+func TestObserverBusinessFailureAcceptsMonitoredTagBeforeFirstProbe(t *testing.T) {
+	observer := &Observer{
+		config:  &Config{SubjectSelector: []string{"proxy-"}},
+		ohm:     &staticOutboundSelector{selected: []string{"proxy-a"}},
+		overlay: newRuntimeFeedbackOverlay(),
+	}
+
+	observer.ReportOutboundSignal(&extension.OutboundSignal{OutboundTag: "proxy-a", Kind: extension.OutboundSignalDialFailure, Reason: "dial failed"})
+
+	result := observer.snapshotObservationStatusLocked()
+	if len(result) != 1 {
+		t.Fatalf("expected monitored tag to be accepted before first probe, got %d statuses", len(result))
+	}
+	if result[0].OutboundTag != "proxy-a" || result[0].Alive {
+		t.Fatalf("expected monitored tag synthetic dead status, got %+v", result[0])
+	}
+}
+
+func TestObserverAcceptsRuntimeFeedbackRefreshesSelectorChanges(t *testing.T) {
+	selector := &staticOutboundSelector{selected: []string{"proxy-a"}}
+	observer := &Observer{
+		config:  &Config{SubjectSelector: []string{"proxy-"}},
+		ohm:     selector,
+		overlay: newRuntimeFeedbackOverlay(),
+	}
+
+	if !observer.acceptsRuntimeFeedback("proxy-a") {
+		t.Fatal("expected initial monitored tag to be accepted")
+	}
+
+	selector.selected = []string{"proxy-b"}
+	if !observer.acceptsRuntimeFeedback("proxy-b") {
+		t.Fatal("expected newly monitored tag to be accepted after selector change")
+	}
+	if observer.acceptsRuntimeFeedback("proxy-a") {
+		t.Fatal("expected removed tag to be ignored after selector change")
+	}
+}
+
 func TestObserverBusinessSuccessRestoresSyntheticAliveStatus(t *testing.T) {
-	observer := &Observer{overlay: newRuntimeFeedbackOverlay()}
+	observer := newMonitoredObserver()
 	observer.ReportOutboundSignal(&extension.OutboundSignal{OutboundTag: "proxy-a", Kind: extension.OutboundSignalRelaySuccess})
 
 	result := observer.snapshotObservationStatusLocked()
@@ -107,10 +179,8 @@ func TestObserverBusinessSuccessRestoresSyntheticAliveStatus(t *testing.T) {
 }
 
 func TestObserverBusinessFailureNeedsSecondStrikeAfterWarmup(t *testing.T) {
-	observer := &Observer{
-		status:  []*OutboundStatus{{OutboundTag: "proxy-a", Alive: true, Delay: 20, LastSeenTime: 10, LastTryTime: 10}},
-		overlay: newRuntimeFeedbackOverlay(),
-	}
+	observer := newMonitoredObserver()
+	observer.status = []*OutboundStatus{{OutboundTag: "proxy-a", Alive: true, Delay: 20, LastSeenTime: 10, LastTryTime: 10}}
 	observer.ReportOutboundSignal(&extension.OutboundSignal{OutboundTag: "proxy-a", Kind: extension.OutboundSignalDialFailure, Reason: "dial failed"})
 
 	result := observer.snapshotObservationStatusLocked()
@@ -123,10 +193,8 @@ func TestObserverBusinessFailureNeedsSecondStrikeAfterWarmup(t *testing.T) {
 }
 
 func TestObserverBusinessSuccessNeedsRecoveryStreakAfterDown(t *testing.T) {
-	observer := &Observer{
-		status:  []*OutboundStatus{{OutboundTag: "proxy-a", Alive: true, Delay: 20, LastSeenTime: 10, LastTryTime: 10}},
-		overlay: newRuntimeFeedbackOverlay(),
-	}
+	observer := newMonitoredObserver()
+	observer.status = []*OutboundStatus{{OutboundTag: "proxy-a", Alive: true, Delay: 20, LastSeenTime: 10, LastTryTime: 10}}
 	observer.ReportOutboundSignal(&extension.OutboundSignal{OutboundTag: "proxy-a", Kind: extension.OutboundSignalDialFailure, Reason: "dial failed"})
 	observer.ReportOutboundSignal(&extension.OutboundSignal{OutboundTag: "proxy-a", Kind: extension.OutboundSignalDialFailure, Reason: "dial failed"})
 
@@ -152,10 +220,8 @@ func TestObserverBusinessSuccessNeedsRecoveryStreakAfterDown(t *testing.T) {
 }
 
 func TestObserverNewProbeClearsOldFailureStreak(t *testing.T) {
-	observer := &Observer{
-		status:  []*OutboundStatus{{OutboundTag: "proxy-a", Alive: true, Delay: 20, LastSeenTime: 10, LastTryTime: 10}},
-		overlay: newRuntimeFeedbackOverlay(),
-	}
+	observer := newMonitoredObserver()
+	observer.status = []*OutboundStatus{{OutboundTag: "proxy-a", Alive: true, Delay: 20, LastSeenTime: 10, LastTryTime: 10}}
 
 	observer.ReportOutboundSignal(&extension.OutboundSignal{OutboundTag: "proxy-a", Kind: extension.OutboundSignalDialFailure, Reason: "dial failed 1"})
 	observer.status[0].LastTryTime = time.Now().Unix() + 2
