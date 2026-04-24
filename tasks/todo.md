@@ -99,3 +99,33 @@
 - 新增回归测试覆盖三条边界：未监控 tag 必须忽略、监控内但尚未形成 base status 的 tag 仍可接收 runtime feedback、以及 `subject_selector` 命中集合在非空缓存状态下继续变化时也会被立即刷新。
 - 定向验证已通过：`timeout 60s go test ./app/observatory ./app/observatory/burst -count=1`、`timeout 60s go test ./app/router -run "TestChampion|TestBalancingRuleBuildChampion" -count=1`。
 - 额外尝试过 `timeout 60s go test ./app/router -run "TestChampion|TestBalancingRuleBuildChampion|TestSimpleBalancer" -count=1`；其中 `TestSimpleBalancer` 仍因测试上下文未注入 core instance 在当前仓库基线下失败，与本轮 observatory 改动无直接关系，因此未纳入本次验收口径。
+
+## 2026-04-24 champion 默认首选擂主可配置
+
+- [x] 为 champion 增加 `preferredTag` 配置字段并接通配置链路
+- [x] 让 observatory 与无 observatory 的默认首选逻辑都优先使用 `preferredTag`
+- [x] 补充 champion 与 router 配置解析的最小回归测试
+- [x] 运行受影响范围的最小充分验证
+
+### Review 小结
+
+- `app/router/config.proto::StrategyChampionConfig`、`infra/conf/router_strategy.go::(*strategyChampionConfig).Build` 与 `app/router/config.go::(*BalancingRule).Build` 现已接通 `preferredTag`，只写该字段时也会生成 `strategy_settings`。
+- `app/router/strategy_champion_support.go::ChampionSettings.normalized` 现会裁剪 `preferredTag` 首尾空白；`(*championObservation).preferred` 优先使用命中候选集的显式 `preferredTag`，缺失时退回原有首项语义。
+- `app/router/strategy_champion.go::(*ChampionStrategy).pickRoundRobinFallback` 现已在无 observatory 且当前无既有 champion，或旧 champion 已不在当前候选集时，优先从 `preferredTag` 启动首轮回退，随后继续沿候选数组顺序轮转。
+- 新增回归测试覆盖四条边界：显式 `preferredTag` 的 observatory 首选语义、`preferredTag` 缺失时的旧逻辑回退、无 observatory 时从 `preferredTag` 启动 round-robin fallback，以及 stale `lastTag` 遇到新候选集时重新从 `preferredTag` 启动。
+- 定向验证已通过：`timeout 60s go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion' -count=1`、`timeout 60s go test ./infra/conf -run 'TestRouterConfigChampionStrategy' -count=1`。
+
+## 2026-04-24 preferredMaxDelayGap 只限制向上选择
+
+- [x] 复核 preferred 回切条件并确认 `preferredMaxDelayGap` 误伤向下选择
+- [x] 将 `preferredMaxDelayGap` 收口为仅限制 preferred 更慢时的回切
+- [x] 补充 preferred 回切方向语义的最小回归测试
+- [x] 运行 champion 相关定向验证
+
+### Review 小结
+
+- `app/router/strategy_champion_support.go::(*championObservation).preferredCanReclaim` 现不再用 `abs(anchorDelay-preferredDelay)` 双向限流；只有 `preferredDelay > anchorDelay` 且上行分差超过 `preferredMaxDelayGap` 时，才会阻止 preferred 回切。
+- preferred 本身更快时，`preferredMaxDelayGap` 不再成为阻断条件；这与“低延迟不该被 gap 拦住”的新语义保持一致。
+- 新增回归测试覆盖两条关键边界：preferred 更快但分差很大时仍允许回切，以及 preferred 更慢且上行分差过大时继续禁止回切。
+- `docs/champion.md` 已同步更新 preferred 与 `preferredMaxDelayGap` 的配置语义，避免继续按旧的绝对差规则理解 champion。
+- 定向验证已通过：`timeout 60s go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion' -count=1`。

@@ -100,6 +100,8 @@ message StrategyChampionConfig {
   float health_ping_jitter_scale = 3;
   // preferred 回切允许的最大分差，int64 values of time.Duration
   int64 preferred_max_delay_gap = 4;
+  // 显式指定默认首选擂主；为空或不在候选集时退回原有默认顺序。
+  string preferred_tag = 5;
 }
 
 message Config {

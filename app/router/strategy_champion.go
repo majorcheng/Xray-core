@@ -176,11 +176,48 @@ func (s *ChampionStrategy) currentChampion() string {
 	return s.lastTag
 }
 
+// preferredRoundRobinStart 在无 observatory 的首轮回退时优先命中显式首选擂主。
+func (s *ChampionStrategy) preferredRoundRobinStart(tags []string) (string, int, bool) {
+	preferredTag := s.Settings.normalized().PreferredTag
+	if preferredTag == "" {
+		return "", 0, false
+	}
+	for idx, tag := range tags {
+		if tag == preferredTag {
+			return preferredTag, idx, true
+		}
+	}
+	return "", 0, false
+}
+
+// hasCurrentCandidate 判断当前记录的 champion 是否仍属于本轮候选集。
+func hasCurrentCandidate(tags []string, tag string) bool {
+	if tag == "" {
+		return false
+	}
+	for _, candidate := range tags {
+		if candidate == tag {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *ChampionStrategy) pickRoundRobinFallback(tags []string) string {
 	s.mu.Lock()
 	oldTag := s.lastTag
 	selectedTag := tags[s.index%len(tags)]
-	s.index = (s.index + 1) % len(tags)
+	// 旧 champion 为空，或已不在本轮候选集时，都视作需要从当前集合重新启动 fallback。
+	if !hasCurrentCandidate(tags, oldTag) {
+		if preferredTag, preferredIdx, ok := s.preferredRoundRobinStart(tags); ok {
+			selectedTag = preferredTag
+			s.index = (preferredIdx + 1) % len(tags)
+		} else {
+			s.index = (s.index + 1) % len(tags)
+		}
+	} else {
+		s.index = (s.index + 1) % len(tags)
+	}
 	s.lastTag = selectedTag
 	s.clearDuelLocked()
 	s.mu.Unlock()

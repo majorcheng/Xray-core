@@ -52,6 +52,7 @@ type strategyChampionConfig struct {
 	PreferredObservationCount int32             `json:"preferredObservationCount,omitempty"`
 	HealthPingJitterScale     float64           `json:"healthPingJitterScale,omitempty"`
 	PreferredMaxDelayGap      duration.Duration `json:"preferredMaxDelayGap,omitempty"`
+	PreferredTag              string            `json:"preferredTag,omitempty"`
 }
 
 // healthCheckSettings holds settings for health Checker
@@ -85,7 +86,8 @@ func (v *strategyChampionConfig) Build() (proto.Message, error) {
 	if v.CandidateObservationCount == 0 &&
 		v.PreferredObservationCount == 0 &&
 		v.HealthPingJitterScale == 0 &&
-		v.PreferredMaxDelayGap == 0 {
+		v.PreferredMaxDelayGap == 0 &&
+		strings.TrimSpace(v.PreferredTag) == "" {
 		return nil, nil
 	}
 	config := &router.StrategyChampionConfig{
@@ -93,6 +95,7 @@ func (v *strategyChampionConfig) Build() (proto.Message, error) {
 		PreferredObservationCount: v.PreferredObservationCount,
 		HealthPingJitterScale:     float32(v.HealthPingJitterScale),
 		PreferredMaxDelayGap:      int64(v.PreferredMaxDelayGap),
+		PreferredTag:              strings.TrimSpace(v.PreferredTag),
 	}
 	return config, nil
 }

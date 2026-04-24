@@ -5,7 +5,7 @@
 - Champion 是什么，和 `roundrobin`、`leastping` 的行为差异是什么。
 - Champion 依赖哪些观测数据。
 - Champion 在链路抖动、真实业务失败、恢复、全死场景下的行为是什么。
-- `strategy.settings` 里的四个参数该怎么写，怎么调。
+- `strategy.settings` 里的五个参数该怎么写，怎么调。
 
 ## 1. Champion 是什么
 
@@ -65,13 +65,16 @@ Champion 会退化为普通轮询。
 - `app/router/strategy_champion.go::(*ChampionStrategy).PickOutbound`
 - `app/router/strategy_champion.go::(*ChampionStrategy).pickRoundRobinFallback`
 
-这时不会使用健康观测结果，只按顺序在候选 tag 里轮转。
+这时不会使用健康观测结果。
+
+- 若 `strategy.settings.preferredTag` 命中候选集，且当前还没有既有 champion，或旧 champion 已不在当前候选集，则首轮 round-robin fallback 会先从它启动
+- 后续请求再继续按候选数组顺序轮转
 
 ### 3.2 有 observatory 时
 
 Champion 每次选择时会先构造三个角色：
 
-- `preferred`：候选数组中的第一个 tag
+- `preferred`：若 `strategy.settings.preferredTag` 命中候选集则优先用该 tag；否则退回候选数组中的第一个 tag
 - `anchor`：当前 champion 仍可用时，继续沿用当前 champion；当前 champion 不可用时退回 preferred
 - `best`：当前所有 alive candidate 中综合分数最低的 tag
 
@@ -122,13 +125,14 @@ Champion 会返回空 tag，由 balancer 的 `fallbackTag` 接管。
 
 当前 champion 已经是非首选节点时，preferred 要满足下面两层条件才能回切：
 
-第一层：preferred 足够接近当前 champion。
+第一层：preferred 不能“明显更差”；如果 preferred 本身更快，则不会被 `preferredMaxDelayGap` 阻止。
 
 代码在 `app/router/strategy_champion_support.go::(*championObservation).preferredCanReclaim`，规则是：
 
 - preferred 必须存活
 - preferred 与当前 champion 不能是同一个 tag
-- `abs(anchorDelay - preferredDelay) < preferredMaxDelayGap`
+- 当 `preferredDelay > anchorDelay` 时，要求 `preferredDelay - anchorDelay < preferredMaxDelayGap`
+- 当 `preferredDelay <= anchorDelay` 时，不受 `preferredMaxDelayGap` 限制
 - `anchorDelay > preferredDelay * 4 / 7`
 
 第二层：这个“足够接近且更优”要连续出现在多个不同观测快照上。
@@ -291,6 +295,7 @@ Proto 定义在：
         "strategy": {
           "type": "champion",
           "settings": {
+            "preferredTag": "proxy-hk",
             "candidateObservationCount": 6,
             "preferredObservationCount": 8,
             "healthPingJitterScale": 1.5,
@@ -304,7 +309,7 @@ Proto 定义在：
 }
 ```
 
-## 8. 四个参数怎么用
+## 8. 五个参数怎么用
 
 ### 8.1 `candidateObservationCount`
 
@@ -386,7 +391,7 @@ Proto 定义在：
 
 ### 8.4 `preferredMaxDelayGap`
 
-含义：preferred 回切时，允许与当前 champion 之间存在的最大分差。
+含义：preferred 回切时，只在 preferred 比当前 champion 更慢的场景下，限制允许“向上选择”的最大分差；如果 preferred 本身更快，则不会被这个字段拦住。
 
 配置字段：
 
@@ -412,8 +417,33 @@ Proto 定义在：
 建议：
 
 - `80ms`：默认值
-- `60ms`：回切更谨慎
-- `100~150ms`：回切更容易触发
+- `60ms`：preferred 更慢时更谨慎
+- `100~150ms`：允许 preferred 在略慢时也更容易回切
+
+### 8.5 `preferredTag`
+
+含义：显式指定默认首选擂主。
+
+配置字段：
+
+```json
+"preferredTag": "proxy-hk"
+```
+
+默认值来源：
+
+- 空字符串；代码在 `app/router/strategy_champion_support.go::defaultChampionSettings`
+
+实际作用位置：
+
+- `app/router/strategy_champion_support.go::(*championObservation).preferred`
+- `app/router/strategy_champion.go::(*ChampionStrategy).pickRoundRobinFallback`
+
+规则：
+
+- 命中候选集时，作为 preferred 使用
+- 未命中候选集时，退回候选数组首项
+- 无 observatory 且当前没有既有 champion，或旧 champion 已不在当前候选集时，round-robin fallback 也会先从它启动
 
 ## 9. Partial settings 的行为
 
@@ -452,6 +482,7 @@ Proto 定义在：
 - `preferredObservationCount = 6`
 - `healthPingJitterScale = 1`
 - `preferredMaxDelayGap = 80ms`
+- `preferredTag = ""`
 
 ## 10. 推荐配置模板
 
@@ -461,6 +492,7 @@ Proto 定义在：
 "strategy": {
   "type": "champion",
   "settings": {
+    "preferredTag": "proxy-hk",
     "candidateObservationCount": 6,
     "preferredObservationCount": 8,
     "healthPingJitterScale": 1.5,

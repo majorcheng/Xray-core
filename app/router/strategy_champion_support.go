@@ -2,6 +2,7 @@ package router
 
 import (
 	"math"
+	"strings"
 	"time"
 
 	"github.com/xtls/xray-core/app/observatory"
@@ -20,6 +21,7 @@ type ChampionSettings struct {
 	PreferredObservationCount int
 	HealthPingJitterScale     float64
 	PreferredMaxDelayGap      time.Duration
+	PreferredTag              string
 }
 
 type championDecision struct {
@@ -68,6 +70,7 @@ func (s ChampionSettings) normalized() ChampionSettings {
 	if s.PreferredMaxDelayGap <= 0 {
 		s.PreferredMaxDelayGap = defaults.PreferredMaxDelayGap
 	}
+	s.PreferredTag = strings.TrimSpace(s.PreferredTag)
 	return s
 }
 
@@ -89,8 +92,19 @@ func newChampionObservation(tags []string, result *observatory.ObservationResult
 }
 
 func (o *championObservation) preferred() (string, int64) {
-	tag := o.tags[0]
+	tag := o.preferredTag()
 	return tag, o.delayScore(tag)
+}
+
+// preferredTag 返回当前观测下的默认首选擂主。
+// 显式 preferredTag 命中候选集时优先使用，否则退回候选数组首项。
+func (o *championObservation) preferredTag() string {
+	if tag := o.settings.PreferredTag; tag != "" {
+		if _, ok := o.candidateSet[tag]; ok {
+			return tag
+		}
+	}
+	return o.tags[0]
 }
 
 func (o *championObservation) anchor(lastTag string) (string, int64) {
@@ -128,7 +142,8 @@ func (o *championObservation) preferredCanReclaim(preferredTag string, preferred
 	if preferredTag == "" || preferredTag == anchorTag || preferredDelay == championInfiniteDelay {
 		return false
 	}
-	if absInt64(anchorDelay-preferredDelay) >= o.settings.PreferredMaxDelayGap.Milliseconds() {
+	if preferredDelay > anchorDelay &&
+		(preferredDelay-anchorDelay) >= o.settings.PreferredMaxDelayGap.Milliseconds() {
 		return false
 	}
 	return anchorDelay > (preferredDelay * championMinRelativeImprovement / championRelativeImprovementDiv)

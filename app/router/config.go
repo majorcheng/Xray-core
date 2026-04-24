@@ -151,6 +151,7 @@ func (br *BalancingRule) Build(ohm outbound.Manager, dispatcher routing.Dispatch
 				PreferredObservationCount: int(s.PreferredObservationCount),
 				HealthPingJitterScale:     float64(s.HealthPingJitterScale),
 				PreferredMaxDelayGap:      time.Duration(s.PreferredMaxDelayGap),
+				PreferredTag:              s.PreferredTag,
 			}.normalized()
 		}
 		return &Balancer{

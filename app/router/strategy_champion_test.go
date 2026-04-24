@@ -87,6 +87,34 @@ func TestChampionStrategyFallbackToRoundRobinWithoutObservatory(t *testing.T) {
 	}
 }
 
+func TestChampionStrategyFallbackToPreferredTagWithoutObservatory(t *testing.T) {
+	strategy := &ChampionStrategy{
+		Settings: ChampionSettings{PreferredTag: " b "},
+	}
+	tags := []string{"a", "b", "c"}
+	got := []string{
+		strategy.PickOutbound(tags),
+		strategy.PickOutbound(tags),
+		strategy.PickOutbound(tags),
+		strategy.PickOutbound(tags),
+	}
+	want := []string{"b", "c", "a", "b"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected preferred fallback order, got=%v want=%v", got, want)
+	}
+}
+
+func TestChampionStrategyFallbackToPreferredTagWhenLastTagIsStale(t *testing.T) {
+	strategy := &ChampionStrategy{
+		lastTag:  "x",
+		index:    1,
+		Settings: ChampionSettings{PreferredTag: "b"},
+	}
+	if tag := strategy.PickOutbound([]string{"b", "a"}); tag != "b" {
+		t.Fatalf("preferred fallback should restart from configured tag when lastTag is stale, got=%q", tag)
+	}
+}
+
 func TestChampionStrategySwitchLogRoundRobinFallback(t *testing.T) {
 	strategy := &ChampionStrategy{}
 	withLogCapture(t, func(logs *captureLogHandler) {
@@ -253,6 +281,60 @@ func TestChampionStrategyPreferredReclaimWhenCloseAndWithinThreshold(t *testing.
 	}
 }
 
+func TestChampionStrategyPreferredReclaimWhenPreferredMuchFaster(t *testing.T) {
+	strategy := &ChampionStrategy{
+		ctx:     context.Background(),
+		lastTag: "b",
+		Settings: ChampionSettings{
+			CandidateObservationCount: 3,
+			PreferredObservationCount: 3,
+			HealthPingJitterScale:     0,
+			PreferredMaxDelayGap:      80 * time.Millisecond,
+		},
+		observatory: &staticObservatory{
+			status: []*observatory.OutboundStatus{
+				{OutboundTag: "a", Alive: true, Delay: 20, LastTryTime: 1},
+				{OutboundTag: "b", Alive: true, Delay: 150, LastTryTime: 1},
+			},
+		},
+	}
+
+	for i := int64(1); i <= 2; i++ {
+		strategy.observatory.(*staticObservatory).status[0].LastTryTime = i
+		strategy.observatory.(*staticObservatory).status[1].LastTryTime = i
+		if tag := strategy.PickOutbound([]string{"a", "b"}); tag != "b" {
+			t.Fatalf("preferred should keep building reclaim streak before switch, got=%q at round=%d", tag, i)
+		}
+	}
+	strategy.observatory.(*staticObservatory).status[0].LastTryTime = 3
+	strategy.observatory.(*staticObservatory).status[1].LastTryTime = 3
+	if tag := strategy.PickOutbound([]string{"a", "b"}); tag != "a" {
+		t.Fatalf("preferred should reclaim when it is much faster, got=%q", tag)
+	}
+}
+
+func TestChampionObservationPreferredCanReclaimBlocksLargeUpwardGap(t *testing.T) {
+	obs := &championObservation{
+		settings: ChampionSettings{
+			PreferredMaxDelayGap: 30 * time.Millisecond,
+		}.normalized(),
+	}
+	if obs.preferredCanReclaim("preferred", 150, "anchor", 100) {
+		t.Fatal("preferred should not reclaim when it is slower and upward gap exceeds threshold")
+	}
+}
+
+func TestChampionObservationPreferredCanReclaimIgnoresLargeDownwardGap(t *testing.T) {
+	obs := &championObservation{
+		settings: ChampionSettings{
+			PreferredMaxDelayGap: 80 * time.Millisecond,
+		}.normalized(),
+	}
+	if !obs.preferredCanReclaim("preferred", 20, "anchor", 150) {
+		t.Fatal("preferred should reclaim when it is faster even if downward gap exceeds threshold")
+	}
+}
+
 func TestChampionStrategyRequiresDistinctObservationsForPromotion(t *testing.T) {
 	strategy := &ChampionStrategy{
 		ctx: context.Background(),
@@ -314,6 +396,40 @@ func TestChampionStrategyHealthPingJitterPenaltyPrefersStableNode(t *testing.T) 
 	}
 }
 
+func TestChampionObservationPreferredUsesConfiguredTag(t *testing.T) {
+	obs := newChampionObservation(
+		[]string{"a", "b"},
+		&observatory.ObservationResult{
+			Status: []*observatory.OutboundStatus{
+				{OutboundTag: "a", Alive: true, Delay: 20, LastTryTime: 1},
+				{OutboundTag: "b", Alive: true, Delay: 40, LastTryTime: 1},
+			},
+		},
+		ChampionSettings{PreferredTag: "b"},
+	)
+	tag, _ := obs.preferred()
+	if tag != "b" {
+		t.Fatalf("unexpected preferred tag: %q", tag)
+	}
+}
+
+func TestChampionObservationPreferredFallsBackWhenConfiguredTagMissing(t *testing.T) {
+	obs := newChampionObservation(
+		[]string{"a", "b"},
+		&observatory.ObservationResult{
+			Status: []*observatory.OutboundStatus{
+				{OutboundTag: "a", Alive: true, Delay: 20, LastTryTime: 1},
+				{OutboundTag: "b", Alive: true, Delay: 40, LastTryTime: 1},
+			},
+		},
+		ChampionSettings{PreferredTag: "missing"},
+	)
+	tag, _ := obs.preferred()
+	if tag != "a" {
+		t.Fatalf("unexpected fallback preferred tag: %q", tag)
+	}
+}
+
 func TestBalancingRuleBuildChampion(t *testing.T) {
 	rule := &BalancingRule{
 		Strategy:         "champion",
@@ -337,6 +453,7 @@ func TestBalancingRuleBuildChampionSettings(t *testing.T) {
 			PreferredObservationCount: 8,
 			HealthPingJitterScale:     1.5,
 			PreferredMaxDelayGap:      int64(120 * time.Millisecond),
+			PreferredTag:              "b",
 		}),
 	}
 	balancer, err := rule.Build(nil, nil)
@@ -358,6 +475,9 @@ func TestBalancingRuleBuildChampionSettings(t *testing.T) {
 	}
 	if strategy.Settings.PreferredMaxDelayGap != 120*time.Millisecond {
 		t.Fatalf("unexpected preferred max delay gap: %v", strategy.Settings.PreferredMaxDelayGap)
+	}
+	if strategy.Settings.PreferredTag != "b" {
+		t.Fatalf("unexpected preferred tag: %q", strategy.Settings.PreferredTag)
 	}
 }
 
@@ -388,5 +508,8 @@ func TestBalancingRuleBuildChampionPartialSettingsKeepDefaults(t *testing.T) {
 	}
 	if strategy.Settings.PreferredMaxDelayGap != defaultChampionSettings().PreferredMaxDelayGap {
 		t.Fatalf("unexpected preferred max delay gap: %v", strategy.Settings.PreferredMaxDelayGap)
+	}
+	if strategy.Settings.PreferredTag != "" {
+		t.Fatalf("unexpected preferred tag: %q", strategy.Settings.PreferredTag)
 	}
 }
