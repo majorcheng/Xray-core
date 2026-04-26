@@ -816,8 +816,10 @@ func (f *IPSetFactory) GetOrCreateFromGeoIPRules(rules []*GeoIPRule) (*IPSet, er
 	defer f.Unlock()
 
 	if ipset := f.shared[key]; ipset != nil {
+		errors.LogDebug(context.Background(), "geodata geoip matcher cache HIT ", key)
 		return ipset, nil
 	}
+	errors.LogDebug(context.Background(), "geodata geoip matcher cache MISS ", key)
 
 	ipset, err := f.createFrom(func(add func(*CIDR)) error {
 		for _, r := range rules {
@@ -1013,4 +1015,8 @@ func buildOptimizedIPMatcher(f *IPSetFactory, rules []*IPRule) (IPMatcher, error
 	default:
 		return &HeuristicMultiIPMatcher{matchers: subs}, nil
 	}
+}
+
+func newIPSetFactory() *IPSetFactory {
+	return &IPSetFactory{shared: make(map[string]*IPSet)}
 }
