@@ -129,3 +129,16 @@
 - 新增回归测试覆盖两条关键边界：preferred 更快但分差很大时仍允许回切，以及 preferred 更慢且上行分差过大时继续禁止回切。
 - `docs/champion.md` 已同步更新 preferred 与 `preferredMaxDelayGap` 的配置语义，避免继续按旧的绝对差规则理解 champion。
 - 定向验证已通过：`timeout 60s go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion' -count=1`。
+
+## 2026-05-18 跟进上游 `1bdb488` / `v26.5.9`
+
+- [x] 拉取 `origin/main` 与官方 `XTLS/Xray-core` `main` 的最新引用
+- [x] 核对目标提交 `1bdb488c9ec09ea51e6899697d5b7437f3cf6eb2` 与当前分叉状态
+- [x] 只读评估上游 `v26.5.9` 与本地 `main` 的合流风险
+- [ ] 在隔离 worktree 中从当前 `main` 创建同步分支
+- [ ] 将 `upstream-temp/main` 合入同步分支，保留本地 fork 定制
+- [ ] 处理可能出现的冲突，并保持配置重命名、DNS/finalmask 与本地 champion/observatory 改动共存
+- [ ] 运行受影响范围的最小充分验证
+- [ ] 验证通过后，将主工作树 `main` 快进到已验证同步分支
+- [ ] 清理临时 worktree、同步分支与临时 upstream 引用
+- [ ] 补充本轮 Review 小结
