@@ -135,10 +135,18 @@
 - [x] 拉取 `origin/main` 与官方 `XTLS/Xray-core` `main` 的最新引用
 - [x] 核对目标提交 `1bdb488c9ec09ea51e6899697d5b7437f3cf6eb2` 与当前分叉状态
 - [x] 只读评估上游 `v26.5.9` 与本地 `main` 的合流风险
-- [ ] 在隔离 worktree 中从当前 `main` 创建同步分支
-- [ ] 将 `upstream-temp/main` 合入同步分支，保留本地 fork 定制
-- [ ] 处理可能出现的冲突，并保持配置重命名、DNS/finalmask 与本地 champion/observatory 改动共存
-- [ ] 运行受影响范围的最小充分验证
-- [ ] 验证通过后，将主工作树 `main` 快进到已验证同步分支
-- [ ] 清理临时 worktree、同步分支与临时 upstream 引用
-- [ ] 补充本轮 Review 小结
+- [x] 在隔离 worktree 中从当前 `main` 创建同步分支
+- [x] 将 `upstream-temp/main` 合入同步分支，保留本地 fork 定制
+- [x] 处理可能出现的冲突，并保持配置重命名、DNS/finalmask 与本地 champion/observatory 改动共存
+- [x] 运行受影响范围的最小充分验证
+- [x] 验证通过后，将主工作树 `main` 快进到已验证同步分支
+- [x] 清理临时 worktree、同步分支与临时 upstream 引用
+- [x] 补充本轮 Review 小结
+
+### Review 小结
+
+- 本轮从本地 `d245a1eb` 合流官方 `XTLS/Xray-core` `1bdb488c9ec09ea51e6899697d5b7437f3cf6eb2`，生成本地 merge commit `718fc6aa`，标题为 `merge(upstream): 合入 XTLS/Xray-core v26.5.9`。
+- 合流在隔离 worktree `/tmp/xray-core-upstream-sync-20260518-v2659` 中完成，无手工冲突；随后主工作树通过 `git merge --ff-only sync/upstream-20260518-v2659` 快进到已验证提交。
+- 上游本轮主要覆盖 DNS route probe 抽取到 `common/utils`、DNS outbound / Tunnel inbound 配置字段重命名、XHTTP stream-up 内存泄漏修复、freedom `finalRules` 的 `AsIs` IPv4 偏好、XDNS finalmask dialerProxy 边界，以及版本号更新到 `v26.5.9`。
+- 首次 `timeout 180s go test ./app/dns ./proxy/dns ./infra/conf -count=1` 中，`./infra/conf` 因缺少 `resources/geoip.dat` 失败；按 `tasks/lessons.md` 记录的稳定地址补齐 `geoip.dat` 与 `geosite.dat` 后，`timeout 180s go test ./infra/conf -count=1` 通过。
+- 定向验证已通过：`timeout 180s go test ./app/dns ./proxy/dns ./infra/conf -count=1` 中的 `./app/dns`、`./proxy/dns` 通过，`./infra/conf` 补资源后复测通过；`timeout 180s go test ./proxy/freedom ./transport/internet/finalmask/... -count=1`、`timeout 180s go test ./transport/internet/splithttp -count=1`、`timeout 180s go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion' -count=1`、`timeout 180s go test ./app/observatory ./app/observatory/burst -count=1`、`timeout 180s go test ./common/utils ./core ./proxy/dokodemo ./proxy/vless/inbound -count=1` 均已通过。
