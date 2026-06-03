@@ -8,6 +8,7 @@ import (
 	. "github.com/xtls/xray-core/infra/conf"
 	"github.com/xtls/xray-core/transport/internet"
 	finalmaskcustom "github.com/xtls/xray-core/transport/internet/finalmask/header/custom"
+	xraytls "github.com/xtls/xray-core/transport/internet/tls"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -156,6 +157,27 @@ func TestSocketConfig(t *testing.T) {
 	})
 	if expectedOutput.ParseTFOValue() != -1 {
 		t.Fatalf("unexpected parsed TFO value, which should be -1")
+	}
+}
+
+// 验证 allowInsecure 仍可通过配置层显式开启，避免日期门禁破坏旧配置。
+func TestTLSConfigAllowInsecure(t *testing.T) {
+	tlsConfig := new(TLSConfig)
+	if err := json.Unmarshal([]byte(`{"allowInsecure": true}`), tlsConfig); err != nil {
+		t.Fatal(err)
+	}
+
+	message, err := tlsConfig.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	config, ok := message.(*xraytls.Config)
+	if !ok {
+		t.Fatalf("unexpected config type %T", message)
+	}
+	if !config.AllowInsecure {
+		t.Fatal("allowInsecure should be enabled")
 	}
 }
 
