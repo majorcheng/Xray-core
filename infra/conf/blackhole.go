@@ -55,4 +55,5 @@ var configLoader = NewJSONConfigLoader(
 		"health": func() interface{} { return new(HealthResponse) },
 	},
 	"type",
-	"")
+	"",
+)

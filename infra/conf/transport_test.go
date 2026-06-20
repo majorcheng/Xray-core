@@ -179,6 +179,9 @@ func TestTLSConfigAllowInsecure(t *testing.T) {
 	if !config.AllowInsecure {
 		t.Fatal("allowInsecure should be enabled")
 	}
+	if !config.GetTLSConfig().InsecureSkipVerify {
+		t.Fatal("allowInsecure should enable InsecureSkipVerify")
+	}
 }
 
 func TestHeaderCustomUDPBuild(t *testing.T) {
@@ -217,8 +220,7 @@ func TestHeaderCustomUDPBuild(t *testing.T) {
 				"mode": "standalone"
 			}`,
 			Parser: parser,
-			Output: &finalmaskcustom.UDPConfig{
-				Mode: "standalone",
+			Output: &finalmaskcustom.UDPStandaloneConfig{
 				Client: []*finalmaskcustom.UDPItem{
 					{
 						RandMax: 255,

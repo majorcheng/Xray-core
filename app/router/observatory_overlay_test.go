@@ -54,7 +54,7 @@ func TestLeastLoadStrategySkipsDeadCandidateFromObservation(t *testing.T) {
 	strategy := NewLeastLoadStrategy(&StrategyLeastLoadConfig{})
 	strategy.ctx = context.Background()
 	strategy.observer = &mutableObservatory{status: []*observatory.OutboundStatus{{OutboundTag: "a", Alive: false, Delay: 10}, {OutboundTag: "b", Alive: true, Delay: 20}}}
-	qualified := strategy.getNodes([]string{"a", "b"}, 0)
+	qualified := strategy.getNodes([]string{"a", "b"})
 	if len(qualified) != 1 {
 		t.Fatalf("expected 1 qualified outbound, got %d", len(qualified))
 	}

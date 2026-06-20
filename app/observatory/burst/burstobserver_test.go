@@ -1,6 +1,7 @@
 package burst
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ func (s *staticOutboundSelector) Select([]string) []string {
 func newMonitoredBurstObserver() *Observer {
 	return &Observer{
 		config:  &Config{SubjectSelector: []string{"proxy-"}},
-		hp:      NewHealthPing(nil, nil, &HealthPingConfig{Interval: int64(time.Second), SamplingCount: 1}),
+		hp:      NewHealthPing(context.Background(), nil, &HealthPingConfig{Interval: int64(time.Second), SamplingCount: 1}),
 		ohm:     &staticOutboundSelector{selected: []string{"proxy-a"}},
 		overlay: observatory.NewRuntimeFeedbackOverlayBridge(),
 	}
@@ -56,7 +57,7 @@ func TestBurstObserverBusinessSuccessRestoresAliveOverlay(t *testing.T) {
 func TestBurstObserverBusinessFailureIgnoresUnmonitoredTag(t *testing.T) {
 	observer := &Observer{
 		config:  &Config{SubjectSelector: []string{"proxy-"}},
-		hp:      NewHealthPing(nil, nil, &HealthPingConfig{Interval: int64(time.Second), SamplingCount: 1}),
+		hp:      NewHealthPing(context.Background(), nil, &HealthPingConfig{Interval: int64(time.Second), SamplingCount: 1}),
 		ohm:     &staticOutboundSelector{selected: []string{"proxy-a"}},
 		overlay: observatory.NewRuntimeFeedbackOverlayBridge(),
 	}
@@ -71,7 +72,7 @@ func TestBurstObserverBusinessFailureIgnoresUnmonitoredTag(t *testing.T) {
 func TestBurstObserverBusinessFailureAcceptsMonitoredTagBeforeFirstHealthPing(t *testing.T) {
 	observer := &Observer{
 		config:  &Config{SubjectSelector: []string{"proxy-"}},
-		hp:      NewHealthPing(nil, nil, &HealthPingConfig{Interval: int64(time.Second), SamplingCount: 1}),
+		hp:      NewHealthPing(context.Background(), nil, &HealthPingConfig{Interval: int64(time.Second), SamplingCount: 1}),
 		ohm:     &staticOutboundSelector{selected: []string{"proxy-a"}},
 		overlay: observatory.NewRuntimeFeedbackOverlayBridge(),
 	}
@@ -91,7 +92,7 @@ func TestBurstObserverAcceptsRuntimeFeedbackRefreshesSelectorChanges(t *testing.
 	selector := &staticOutboundSelector{selected: []string{"proxy-a"}}
 	observer := &Observer{
 		config:  &Config{SubjectSelector: []string{"proxy-"}},
-		hp:      NewHealthPing(nil, nil, &HealthPingConfig{Interval: int64(time.Second), SamplingCount: 1}),
+		hp:      NewHealthPing(context.Background(), nil, &HealthPingConfig{Interval: int64(time.Second), SamplingCount: 1}),
 		ohm:     selector,
 		overlay: observatory.NewRuntimeFeedbackOverlayBridge(),
 	}

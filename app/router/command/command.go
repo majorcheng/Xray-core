@@ -62,7 +62,6 @@ func (s *routingServer) AddRule(ctx context.Context, request *AddRuleRequest) (*
 		return &AddRuleResponse{}, bo.AddRule(request.Config, request.ShouldAppend)
 	}
 	return nil, errors.New("unsupported router implementation")
-
 }
 
 func extractRoutingConfigFromCore(config *core.Config) (*routerapp.Config, error) {

@@ -38,6 +38,7 @@ message Certificate {
 }
 
 message Config {
+  // 保留旧版 allowInsecure 的 runtime 字段，确保自用配置继续可用。
   bool allow_insecure = 1;
 
   // List of certificates to be served on server.
@@ -81,8 +82,7 @@ message Config {
 
   string ech_config_list = 19;
 
-  // Deprecated
-  string ech_force_query = 20;
+  // Number 20 was assigned and used by an legacy option.
 
   SocketConfig ech_socket_settings = 21;
 
