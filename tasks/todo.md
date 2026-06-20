@@ -1,5 +1,29 @@
 # 任务清单
 
+## 2026-06-20 跟进上游 `be8009c6` / `v26.6.1-24-gbe8009c6`
+
+- [x] 拉取 `origin/main` 与官方 `XTLS/Xray-core` `main` 的最新引用
+- [x] 核对当前工作区、目标提交与分叉状态
+- [x] 在隔离 worktree 中从当前 `main` 创建同步分支
+- [x] 将 `upstream-temp/main` 合入同步分支
+- [x] 处理 `infra/conf/router_strategy.go`、`infra/conf/transport_internet.go`、`transport/internet/splithttp/config.go` 冲突
+- [x] 保留并复核本地 `allowInsecure`、`champion`、observatory、reload、HTTP/XHTTP/SOCKS、VLESS reverse、REALITY、blackhole patch
+- [x] 运行受影响范围的最小充分验证
+- [x] 验证通过后，将主工作树 `main` 快进到已验证同步分支
+- [x] 清理临时 worktree、同步分支与临时引用
+- [x] 补充本轮 Review 小结
+
+### Review 小结
+
+- 本轮从本地 `d4016a26` 合流官方 `XTLS/Xray-core` `be8009c62509322682299bfbe969a62cee03f4d5`，生成本地 merge commit `e1953c23`，标题为 `merge(upstream): 合入 XTLS/Xray-core be8009c6`。
+- 合流在隔离 worktree `/tmp/xray-core-upstream-sync-20260620` 中完成；主工作树随后通过 `git merge --ff-only sync/upstream-20260620` 快进到已验证提交，并已清理同步 worktree、同步分支与 `upstream-temp/main` 临时引用。
+- 手工冲突集中在 `infra/conf/router_strategy.go`、`infra/conf/transport_internet.go`、`transport/internet/splithttp/config.go`；处理时采用上游新结构，同时保留本地 `champion` strategy、TLS `allowInsecure` 配置入口和 XHTTP session ID 相关新字段。
+- 上游本轮移除了 runtime `tls.Config.AllowInsecure` 字段；已在 `transport/internet/tls/config.proto` 和生成文件中恢复 `allow_insecure = 1`，并在 `GetTLSConfig` 中恢复 `InsecureSkipVerify` 运行态语义，避免旧自用配置只通过解析但运行态失效。
+- 适配了上游 API 变化：`app/router/observatory_overlay_test.go` 跟随 `LeastLoadStrategy.getNodes` 新签名；`app/observatory/burst/burstobserver_test.go` 为 `NewHealthPing` 传入 `context.Background()`，避免上游 `context.WithCancel(ctx)` 对 nil parent panic。
+- 定向验证已通过：`go test ./transport/internet/splithttp`、`go test ./infra/conf -run 'TestTLSConfigAllowInsecure|TestRouterConfigChampionStrategy|TestHeaderCustom'`、`go test ./transport/internet/tls -run 'TestPinned|TestTLSConfigAllowInsecure'`、`go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion'`、`go test ./app/observatory ./app/observatory/burst`、`go test ./proxy/http ./proxy/socks ./app/reverse ./transport/internet/reality ./proxy/blackhole`、`go test ./app/proxyman/outbound ./app/router/command ./main`、`go test ./app/dns/fakedns`、`go test ./app/dns` 本地非 TCP 外部 DNS 子集、`go test ./proxy/dns ./proxy/freedom ./transport/internet/finalmask/...`。
+- `git diff --check` 与 proto 生成头检查已通过；`transport/internet/tls/config.pb.go` 头部继续与仓库生成版本保持 `protoc-gen-go v1.36.11`、`protoc v6.33.5`。
+- 已知限制：全量 `go test ./app/dns ./proxy/dns ./proxy/freedom ./transport/internet/finalmask/...` 中 `app/dns::TestTCPLocalNameServer` 访问外部 `8.8.8.8:53` 时返回 `EOF`，属于当前网络环境下的外部 TCP DNS 依赖失败；本轮保留失败证据，并用不依赖该外部 TCP DNS 的 DNS 子集完成回归验证。
+
 - [x] 只读核对 `patches/01_core_runtime_observability_reload.patch` 与当前 `HEAD` 的失配位置
 - [x] 在隔离 worktree 中迁移 01 patch 到当前 `HEAD`
 - [x] 修正 `app/dispatcher/default.go` 与 `main/run.go` 等失配点
