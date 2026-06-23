@@ -1,5 +1,27 @@
 # 任务清单
 
+## 2026-06-23 跟进上游 `b99c3e56` / `v26.6.22`
+
+- [x] 拉取 `origin/main` 与官方 `XTLS/Xray-core` `main` 的最新引用
+- [x] 核对当前工作区、目标提交与分叉状态
+- [x] 在隔离 worktree 中从当前 `main` 创建同步分支
+- [x] 将 `upstream-temp/main` 合入同步分支
+- [x] 处理冲突并保留本地 `allowInsecure`、`champion`、observatory、reload、HTTP/XHTTP/SOCKS、VLESS reverse、REALITY、blackhole patch
+- [x] 运行受影响范围的最小充分验证
+- [x] 验证通过后，将主工作树 `main` 快进到已验证同步分支
+- [x] 清理临时 worktree、同步分支与临时引用
+- [x] 补充本轮 Review 小结
+
+### Review 小结
+
+- 本轮从本地 `ef9c6bd2` 合流官方 `XTLS/Xray-core` `b99c3e56574fb0317608c49dd1dd9af816db7a9e`，目标版本为 `v26.6.22`，生成本地 merge commit `c0e8818b`，标题为 `merge(upstream): 合入 XTLS/Xray-core v26.6.22`。
+- 合流在隔离 worktree `/tmp/xray-core-upstream-sync-20260623` 中完成；本次 `ort` 自动合并无手工冲突，随后主工作树通过 `git merge --ff-only sync/upstream-20260623` 快进到已验证提交，并已清理同步 worktree、同步分支与 `upstream-temp/main` 临时引用。
+- 上游本轮主要覆盖版本号、`pion/stun/v3` 依赖更新、Linux TUN `XRAY_TUN_FD` 支持、fragment finalmask `lengths` / `delays`、以及 XHTTP server 在 `xPaddingObfsMode` 下的 `scStreamUpServerSecs` 处理。
+- 本地关键 patch 复核通过：TLS `allowInsecure` 配置与 runtime `InsecureSkipVerify` 语义仍存在；`champion` strategy、observatory runtime feedback、routing reload、HTTP/XHTTP/SOCKS、VLESS reverse、REALITY key cache、blackhole health response 均保留。
+- 隔离 worktree 定向验证已通过：`go test ./infra/conf -run 'TestTLSConfigAllowInsecure|TestRouterConfigChampionStrategy|TestHeaderCustom'`、`go test ./transport/internet/splithttp ./transport/internet/finalmask/fragment`、`go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion'`、`go test ./app/observatory ./app/observatory/burst`、`go test ./proxy/http ./proxy/socks ./app/reverse ./transport/internet/reality ./proxy/blackhole`、`go test ./app/proxyman/outbound ./app/router/command ./main`、`go test ./core ./proxy/tun ./transport/internet/finalmask/...`、`go test ./app/dns/fakedns`、`go test ./proxy/dns ./proxy/freedom`。
+- 主工作树快进后复验通过：`go test ./infra/conf -run 'TestTLSConfigAllowInsecure|TestRouterConfigChampionStrategy|TestHeaderCustom'`、`go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion'`、`go test ./app/observatory ./app/observatory/burst`、`go test ./transport/internet/splithttp ./transport/internet/finalmask/fragment`。
+- `git diff --check` 与 proto 生成头检查已通过；`core/config.pb.go`、`transport/internet/tls/config.pb.go`、`transport/internet/finalmask/fragment/config.pb.go` 头部均保持仓库生成版本 `protoc-gen-go v1.36.11`、`protoc v6.33.5`。
+
 ## 2026-06-20 跟进上游 `be8009c6` / `v26.6.1-24-gbe8009c6`
 
 - [x] 拉取 `origin/main` 与官方 `XTLS/Xray-core` `main` 的最新引用
