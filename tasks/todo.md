@@ -1,5 +1,28 @@
 # 任务清单
 
+## 2026-06-28 跟进上游 `45cf2898` / `v26.6.27`
+
+- [x] 拉取 `origin/main` 与官方 `XTLS/Xray-core` `main` 的最新引用
+- [x] 核对当前工作区、目标提交与分叉状态
+- [x] 在隔离 worktree 中从当前 `main` 创建同步分支
+- [x] 将 `upstream-temp/main` 合入同步分支
+- [x] 处理 `infra/conf/transport_internet.go` 冲突并保留本地 `allowInsecure`、`champion`、observatory、reload、HTTP/XHTTP/SOCKS、VLESS reverse、REALITY、blackhole patch
+- [x] 运行受影响范围的最小充分验证
+- [x] 验证通过后，将主工作树 `main` 快进到已验证同步分支
+- [x] 清理临时 worktree、同步分支与临时引用
+- [x] 补充本轮 Review 小结
+
+### Review 小结
+
+- 本轮从本地 `4ac63fbc` 合流官方 `XTLS/Xray-core` `45cf2898ab12e97a55dd8f1f3d78d903340bdc9e`，目标版本为 `v26.6.27`，生成本地 merge commit `b9851659`，标题为 `merge(upstream): 合入 XTLS/Xray-core v26.6.27`。
+- 合流在隔离 worktree `/tmp/xray-core-upstream-sync-20260628` 中完成；主工作树随后通过 `git merge --ff-only sync/upstream-20260628` 快进到已验证提交，并已清理同步 worktree、同步分支与 `upstream-temp/main` 临时引用。
+- 本轮唯一手工冲突在 `infra/conf/transport_internet.go` 的 XHTTP/XMux 默认值。上游新增默认 `maxConnections = 6`，本地 `patches/02_transport_http_xhttp.patch` 明确保留 `maxConcurrency = 8~16` 与 `hMaxReusableSecs = 2400~3200`，因此按“保持自用 patch 可用”保留本地 XHTTP/XMux 调优，同时接纳上游其他变更。
+- 上游本轮主要覆盖 metrics 生命周期与实例隔离、TUN 统计与跨平台处理、WireGuard 动态用户管理、Hysteria v2 配置简化、XHTTP upload queue 重构、geodata 下载 HTTPS/uTLS 调整，以及依赖 `github.com/cloudflare/circl v1.6.4`。
+- 本地关键 patch 复核通过：TLS `allowInsecure` 配置与 runtime `InsecureSkipVerify` 语义仍存在；`champion` strategy、observatory runtime feedback、routing reload、HTTP/XHTTP/SOCKS、VLESS reverse、REALITY key cache、blackhole health response 均保留。
+- 隔离 worktree 定向验证已通过：`go test ./infra/conf -run 'TestTLSConfigAllowInsecure|TestRouterConfigChampionStrategy|TestHeaderCustom'`、`go test ./transport/internet/splithttp`、`go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion'`、`go test ./app/observatory ./app/observatory/burst`、`go test ./app/metrics ./proxy/tun`、`go test ./proxy/http ./proxy/socks ./app/reverse ./transport/internet/reality ./proxy/blackhole`、`go test ./app/proxyman/outbound ./app/router/command ./main ./core`、`go test ./proxy/hysteria ./transport/internet/hysteria ./proxy/wireguard`、`go test ./app/dns/fakedns ./proxy/dns ./proxy/freedom`、`go test ./app/geodata ./transport/internet/finalmask/...`。
+- 主工作树快进后复验通过：`go test ./infra/conf -run 'TestTLSConfigAllowInsecure|TestRouterConfigChampionStrategy|TestHeaderCustom'`、`go test ./transport/internet/splithttp`、`go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion'`、`go test ./app/observatory ./app/observatory/burst`、`go test ./app/metrics ./proxy/tun`。
+- `git diff --check` 与 proto 生成头检查已通过；`core/config.pb.go`、`transport/internet/tls/config.pb.go`、`proxy/hysteria/config.pb.go`、`transport/internet/hysteria/config.pb.go`、`proxy/wireguard/config.pb.go` 头部均保持仓库生成版本 `protoc-gen-go v1.36.11`、`protoc v6.33.5`。
+
 ## 2026-06-23 跟进上游 `b99c3e56` / `v26.6.22`
 
 - [x] 拉取 `origin/main` 与官方 `XTLS/Xray-core` `main` 的最新引用
