@@ -1,5 +1,68 @@
 # 任务清单
 
+## 2026-07-28 跟进上游 `5ca6f4b7` / `v26.7.28`
+
+### 实施状态
+
+- [x] 刷新 `origin/main` 与官方 `XTLS/Xray-core` `main` 引用
+- [x] 核对工作区、目标提交、分叉状态和上游变更范围
+- [x] 用 `git merge-tree` 预判冲突及配置文件拆分风险
+- [x] 等待用户确认本方案及下列本地验证范围
+- [x] 在隔离 worktree 中创建 `sync/upstream-20260728-v26728` 并合入 `upstream-temp/main`
+- [x] 处理 `infra/conf/transport_internet.go` 冲突，采用上游拆分结构并迁移本地配置语义
+- [x] 复核自动合并的四个本地/上游交叉文件
+- [x] 增加一个聚焦回归测试并运行已授权的定向验证
+- [x] 验证通过后将主工作树 `main` 快进到同步分支
+- [x] 在主工作树复验、更新 Review 小结并清理临时 worktree/分支/ref
+
+### 合流前证据与方案
+
+- 合流前 `main`/`origin/main` 均为 `a4827c1cb867609658fcd3216a6bb7d17c137b93`，tracked 工作区干净；忽略项 `.codex-remote/`、`DEBUG.md`、测试证书和 `patches/` 保持不动。
+- 官方目标为 `5ca6f4b7d4dc20a881d4330e498892697627ec0c`，精确标签 `v26.7.28`；merge-base 为 `45cf2898ab12e97a55dd8f1f3d78d903340bdc9e`，合流前双方独有提交数为 `26 / 35`。
+- 上游从基线起改动 102 个文件。双方共同修改 5 个文件；预测合并仅在 `infra/conf/transport_internet.go` 出现文本冲突，其他 4 个为 `app/dispatcher/default.go`、`app/proxyman/outbound/handler.go`、`main/run.go`、`transport/internet/tls/config.go`。
+- 冲突解决采用上游 `infra/conf/transport_internet.go` 的拆分后结构，不保留旧文件中已迁出的整段实现；将本地 TLS `allowInsecure` Build 语义迁移到新 `infra/conf/transport_security.go`，将 XHTTP/XMux 默认 `maxConcurrency=8..16`、`hMaxReusableSecs=2400..3200` 迁移到新 `infra/conf/transport_method.go`，其余采用上游 `v26.7.28` 实现。
+- 自动合并的 4 个交叉文件逐项审阅，确保 stats API、root `env` 配置和 TLS CA pin/cipher suite 上游变化与本地 observatory/reload/`allowInsecure` 逻辑同时成立。
+- 合流在 `/tmp/xray-core-upstream-sync-20260728-v26728` 隔离 worktree 完成；验证通过后主工作树仅执行 `git merge --ff-only sync/upstream-20260728-v26728`。本轮不 push，不修改 ignored 的 `patches/` 归档文件。
+
+### 验证授权
+
+- 用户确认前仅完成只读核验、远端 fetch 和本计划文档更新；merge、冲突处理、目标代码修改和测试均在确认本章节后执行。
+- 用户确认本方案即授权：创建/删除上述临时 worktree、创建/删除同步分支、执行一次 `--no-ff` 本地 merge、解决已列冲突、增加一个聚焦测试、运行“建议验证”中的本地命令，以及验证通过后对当前 `main` 执行一次 `--ff-only`。
+- 不包含：`push`、远端分支/标签变更、生产部署/运行态验证、全仓 `go test ./...`、重写 ignored 的 `patches/` 补丁归档；这些动作如确有需要再单独确认。
+
+### 建议验证
+
+- 在 `infra/conf/transport_test.go` 增加 `TestSplitHTTPConfigDefaultXmux`，直接断言默认 `maxConcurrency=8..16`、`maxConnections=0..0`、`hMaxReusableSecs=2400..3200`；既有 `TestTLSConfigAllowInsecure` 继续同时断言配置层和 runtime `InsecureSkipVerify`。
+- `timeout 180s go test ./infra/conf -run 'TestTLSConfigAllowInsecure|TestSplitHTTPConfigDefaultXmux|TestRouterConfigChampionStrategy|TestHeaderCustom' -count=1`
+- `timeout 180s go test ./app/dispatcher ./app/proxyman/outbound ./app/stats ./core ./main -count=1`
+- `timeout 180s go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion' -count=1`
+- `timeout 180s go test ./app/observatory ./app/observatory/burst ./app/router/command -count=1`
+- `timeout 180s go test ./transport/internet/splithttp ./transport/internet/finalmask/xmc -count=1`
+- `timeout 180s go test ./transport/internet/tls -run 'TestCalculateCertHash|TestVerifyPeerLeafCert|TestVerifyPeerCACert|TestCertificateIssuing|TestExpiredCertificate|TestInsecureCertificates' -count=1`
+- `timeout 180s go test ./proxy/http ./proxy/socks ./app/reverse ./transport/internet/reality ./proxy/blackhole -count=1`
+- `timeout 180s go test ./proxy/freedom ./proxy/tun ./proxy/wireguard ./common/net -count=1`
+- `gofmt` 仅格式化本轮手工编辑的 Go 文件；末尾运行 `git diff --check`、关键补丁符号检查和主工作树核心复验。
+
+### 预计影响文件
+
+- 官方 merge：上游 `45cf2898..5ca6f4b7` 涉及的 102 个文件，内容保持官方提交边界。
+- 手工冲突/语义迁移：`infra/conf/transport_internet.go`、`infra/conf/transport_security.go`、`infra/conf/transport_method.go`。
+- 聚焦回归：`infra/conf/transport_test.go`。
+- 自动合并重点复核：`app/dispatcher/default.go`、`app/proxyman/outbound/handler.go`、`main/run.go`、`transport/internet/tls/config.go`。
+- 任务记录：`tasks/todo.md`。
+
+### Review 小结
+
+- 本轮从本地 `a4827c1cb867609658fcd3216a6bb7d17c137b93` 合流官方 `XTLS/Xray-core` `5ca6f4b7d4dc20a881d4330e498892697627ec0c`，目标版本为 `v26.7.28`，生成双亲 merge commit `aefeeb79b93ecfdfca8dfe3dae5eab20a186a8a9`，标题为 `merge(upstream): 合入 XTLS/Xray-core v26.7.28`。
+- 真实合流与预判一致，唯一文本冲突为 `infra/conf/transport_internet.go`。解决时采用上游拆分后的文件，不保留会产生重复定义的旧实现；TLS `allowInsecure` Build 语义迁移到 `infra/conf/transport_security.go`，XHTTP/XMux 默认 `maxConcurrency=8~16`、`hMaxReusableSecs=2400~3200` 迁移到 `infra/conf/transport_method.go`。
+- 新增 `infra/conf/transport_test.go::TestSplitHTTPConfigDefaultXmux`，断言本地 XMux 默认范围和 `maxConnections=0~0`；既有 `TestTLSConfigAllowInsecure` 继续同时覆盖配置层 `AllowInsecure` 与 runtime `InsecureSkipVerify`。
+- 自动合并的 `app/dispatcher/default.go`、`app/proxyman/outbound/handler.go`、`main/run.go`、`transport/internet/tls/config.go` 已按两个父提交复核：本地 observatory/relay feedback/reload/PID/`allowInsecure` 保留，上游 stats manager API、root `env` 说明、CA pin serverName 校验和 unsafe cipher suite 支持同时接纳。
+- 本地关键补丁签名复核通过：`champion` strategy、standard/burst `ReportOutboundSignal`、routing `ReloadRules`、XHTTP `GenerateSessionID`、VLESS reverse、REALITY `mldsaKeyCache`、blackhole `HealthResponse` 均仍存在；`allow_insecure` proto/generated/runtime 全链路完整。
+- 隔离 worktree 的计划内验证全部通过：`infra/conf` 聚焦测试；dispatcher/proxyman/stats/core/main；router champion；observatory/burst/router-command；splithttp/XMC；TLS 本地证书校验子集；HTTP/SOCKS/reverse/REALITY/blackhole；freedom/TUN/WireGuard/common-net。`proxy/freedom` 与 `proxy/wireguard` 无测试文件，但 package 编译通过。
+- 主工作树快进后核心复验全部通过：`infra/conf` 聚焦测试、splithttp/XMC、router champion、observatory/burst、dispatcher/proxyman/stats/core/main；`git diff --check` 无错误。
+- 主工作树通过 `git merge --ff-only sync/upstream-20260728-v26728` 快进到 `aefeeb79`；临时 worktree、同步分支和 `upstream-temp/main` ref 已清理。未触碰另一个既有 prunable worktree 记录、ignored 的 `.codex-remote/`、`DEBUG.md`、测试证书或 `patches/`。
+- 未执行全仓 `go test ./...`、生产运行态验证或 `push`，这些动作不在本轮授权范围内。
+
 ## 2026-06-28 跟进上游 `45cf2898` / `v26.6.27`
 
 - [x] 拉取 `origin/main` 与官方 `XTLS/Xray-core` `main` 的最新引用
