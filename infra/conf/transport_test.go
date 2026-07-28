@@ -8,6 +8,7 @@ import (
 	. "github.com/xtls/xray-core/infra/conf"
 	"github.com/xtls/xray-core/transport/internet"
 	finalmaskcustom "github.com/xtls/xray-core/transport/internet/finalmask/header/custom"
+	"github.com/xtls/xray-core/transport/internet/splithttp"
 	xraytls "github.com/xtls/xray-core/transport/internet/tls"
 	"google.golang.org/protobuf/proto"
 )
@@ -181,6 +182,28 @@ func TestTLSConfigAllowInsecure(t *testing.T) {
 	}
 	if !config.GetTLSConfig().InsecureSkipVerify {
 		t.Fatal("allowInsecure should enable InsecureSkipVerify")
+	}
+}
+
+func TestSplitHTTPConfigDefaultXmux(t *testing.T) {
+	message, err := new(SplitHTTPConfig).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	config, ok := message.(*splithttp.Config)
+	if !ok {
+		t.Fatalf("unexpected config type %T", message)
+	}
+	xmux := config.GetXmux()
+	got := [6]int32{
+		xmux.GetMaxConcurrency().GetFrom(), xmux.GetMaxConcurrency().GetTo(),
+		xmux.GetMaxConnections().GetFrom(), xmux.GetMaxConnections().GetTo(),
+		xmux.GetHMaxReusableSecs().GetFrom(), xmux.GetHMaxReusableSecs().GetTo(),
+	}
+	want := [6]int32{8, 16, 0, 0, 2400, 3200}
+	if got != want {
+		t.Fatalf("unexpected default xmux ranges: got %v, want %v", got, want)
 	}
 }
 
