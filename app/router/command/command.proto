@@ -98,6 +98,13 @@ message AddRuleRequest {
 }
 message AddRuleResponse {}
 
+message ReloadRoutingConfigRequest {
+  string format = 1;
+  repeated string config_files = 2;
+}
+
+message ReloadRoutingConfigResponse {}
+
 message RemoveRuleRequest {
   string ruleTag = 1;
 }
@@ -124,6 +131,7 @@ service RoutingService {
   rpc OverrideBalancerTarget(OverrideBalancerTargetRequest) returns (OverrideBalancerTargetResponse) {}
   
   rpc AddRule(AddRuleRequest) returns (AddRuleResponse) {}
+  rpc ReloadRoutingConfig(ReloadRoutingConfigRequest) returns (ReloadRoutingConfigResponse) {}
   rpc RemoveRule(RemoveRuleRequest) returns (RemoveRuleResponse) {}
 
   rpc ListRule(ListRuleRequest) returns (ListRuleResponse) {}

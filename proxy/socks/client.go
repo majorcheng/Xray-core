@@ -9,7 +9,6 @@ import (
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
-	"github.com/xtls/xray-core/common/retry"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/common/signal"
 	"github.com/xtls/xray-core/common/task"
@@ -24,6 +23,59 @@ import (
 type Client struct {
 	server        *protocol.ServerSpec
 	policyManager policy.Manager
+}
+
+const (
+	dialRetryAttempts = 5
+	dialRetryStep     = 100 * time.Millisecond
+)
+
+func (c *Client) dialWithOptionalTimeout(ctx context.Context, dialer internet.Dialer, dest net.Destination, timeout time.Duration) (stat.Connection, error) {
+	dialCtx := ctx
+	cancel := func() {}
+	if timeout > 0 {
+		dialCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	return dialer.Dial(dialCtx, dest)
+}
+
+func (c *Client) dialWithRetry(ctx context.Context, dialer internet.Dialer, dest net.Destination, timeout time.Duration) (stat.Connection, error) {
+	var lastErr error
+	for attempt := 0; attempt < dialRetryAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		conn, err := c.dialWithOptionalTimeout(ctx, dialer, dest, timeout)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+
+		if attempt == dialRetryAttempts-1 {
+			break
+		}
+
+		sleepFor := time.Duration(attempt) * dialRetryStep
+		if sleepFor <= 0 {
+			continue
+		}
+
+		timer := time.NewTimer(sleepFor)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, ctx.Err()
+		}
+	}
+	return nil, errors.New("all retry attempts failed").Base(lastErr)
 }
 
 // NewClient create a new Socks5 client based on the given config.
@@ -60,18 +112,16 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	// Outbound server.
 	server := c.server
 	dest := server.Destination
+	user := server.User
+
+	p := c.policyManager.ForLevel(0)
+	if user != nil {
+		p = c.policyManager.ForLevel(user.Level)
+	}
+
 	// Connection to the outbound server.
-	var conn stat.Connection
-
-	if err := retry.ExponentialBackoff(5, 100).On(func() error {
-		rawConn, err := dialer.Dial(ctx, dest)
-		if err != nil {
-			return err
-		}
-		conn = rawConn
-
-		return nil
-	}); err != nil {
+	conn, err := c.dialWithRetry(ctx, dialer, dest, p.Timeouts.Handshake)
+	if err != nil {
 		return errors.New("failed to find an available destination").Base(err)
 	}
 
@@ -80,8 +130,6 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 			errors.LogInfoInner(ctx, err, "failed to closed connection")
 		}
 	}()
-
-	p := c.policyManager.ForLevel(0)
 
 	request := &protocol.RequestHeader{
 		Version: socks5Version,
@@ -94,14 +142,14 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		request.Command = protocol.RequestCommandUDP
 	}
 
-	user := server.User
 	if user != nil {
 		request.User = user
-		p = c.policyManager.ForLevel(user.Level)
 	}
 
-	if err := conn.SetDeadline(time.Now().Add(p.Timeouts.Handshake)); err != nil {
-		errors.LogInfoInner(ctx, err, "failed to set deadline for handshake")
+	if p.Timeouts.Handshake > 0 {
+		if err := conn.SetDeadline(time.Now().Add(p.Timeouts.Handshake)); err != nil {
+			errors.LogInfoInner(ctx, err, "failed to set deadline for handshake")
+		}
 	}
 	udpRequest, err := ClientHandshake(request, conn, conn)
 	if err != nil {
@@ -144,7 +192,10 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 			return buf.Copy(buf.NewReader(conn), link.Writer, buf.UpdateActivity(timer))
 		}
 	} else if request.Command == protocol.RequestCommandUDP {
-		udpConn, err := dialer.Dial(ctx, udpRequest.Destination())
+		if udpRequest == nil {
+			return errors.New("failed to establish UDP relay endpoint")
+		}
+		udpConn, err := c.dialWithOptionalTimeout(ctx, dialer, udpRequest.Destination(), p.Timeouts.Handshake)
 		if err != nil {
 			return errors.New("failed to create UDP connection").Base(err)
 		}

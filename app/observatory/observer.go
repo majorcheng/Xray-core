@@ -31,6 +31,8 @@ type Observer struct {
 
 	statusLock sync.Mutex
 	status     []*OutboundStatus
+	overlay    *runtimeFeedbackOverlay
+	monitored  map[string]struct{}
 
 	finished *done.Instance
 
@@ -39,7 +41,21 @@ type Observer struct {
 }
 
 func (o *Observer) GetObservation(ctx context.Context) (proto.Message, error) {
-	return &ObservationResult{Status: o.status}, nil
+	o.statusLock.Lock()
+	defer o.statusLock.Unlock()
+	return &ObservationResult{Status: o.snapshotObservationStatusLocked()}, nil
+}
+
+func (o *Observer) ReportOutboundSignal(signal *extension.OutboundSignal) {
+	if signal == nil || signal.OutboundTag == "" || !o.acceptsRuntimeFeedback(signal.OutboundTag) {
+		return
+	}
+	o.statusLock.Lock()
+	defer o.statusLock.Unlock()
+	if !o.monitoredTagLocked(signal.OutboundTag) {
+		return
+	}
+	o.overlay.applyWithStatus(signal, o.statusForTagLocked(signal.OutboundTag), 0)
 }
 
 func (o *Observer) Type() interface{} {
@@ -121,7 +137,8 @@ func (o *Observer) background() {
 func (o *Observer) clearRemovedOutbounds(outbounds []string) {
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
-	if len(o.status) == 0 {
+	o.setMonitoredTagsLocked(outbounds)
+	if len(o.status) == 0 && len(o.overlay.statusByTag) == 0 {
 		return
 	}
 	var pruned []*OutboundStatus
@@ -131,6 +148,42 @@ func (o *Observer) clearRemovedOutbounds(outbounds []string) {
 		}
 	}
 	o.status = pruned
+	o.overlay.prune(outbounds)
+}
+
+// acceptsRuntimeFeedback 只接收当前 subject selector 命中的 tag，避免未监控出站污染观测结果。
+func (o *Observer) acceptsRuntimeFeedback(tag string) bool {
+	outbounds, ok := o.currentObservedOutbounds()
+	if !ok {
+		return false
+	}
+	o.statusLock.Lock()
+	defer o.statusLock.Unlock()
+	o.setMonitoredTagsLocked(outbounds)
+	return o.monitoredTagLocked(tag)
+}
+
+func (o *Observer) currentObservedOutbounds() ([]string, bool) {
+	if o.config == nil || len(o.config.SubjectSelector) == 0 {
+		return nil, false
+	}
+	hs, ok := o.ohm.(outbound.HandlerSelector)
+	if !ok {
+		return nil, false
+	}
+	return hs.Select(o.config.SubjectSelector), true
+}
+
+func (o *Observer) setMonitoredTagsLocked(outbounds []string) {
+	o.monitored = make(map[string]struct{}, len(outbounds))
+	for _, tag := range outbounds {
+		o.monitored[tag] = struct{}{}
+	}
+}
+
+func (o *Observer) monitoredTagLocked(tag string) bool {
+	_, ok := o.monitored[tag]
+	return ok
 }
 
 func (o *Observer) probe(outbound string) ProbeResult {
@@ -220,8 +273,30 @@ func (o *Observer) updateStatusForResult(outbound string, result *ProbeResult) {
 		status.LastErrorReason = ""
 	} else {
 		status.LastErrorReason = result.LastErrorReason
-		status.Delay = 99999999
+		status.Delay = deadDelayMs
 	}
+}
+
+func (o *Observer) snapshotObservationStatusLocked() []*OutboundStatus {
+	result := make([]*OutboundStatus, 0, len(o.status)+len(o.overlay.statusByTag))
+	seen := make(map[string]struct{}, len(o.status))
+	for _, status := range o.status {
+		if status == nil {
+			continue
+		}
+		merged := o.overlay.applyToStatus(status, nil)
+		result = append(result, merged)
+		seen[merged.OutboundTag] = struct{}{}
+	}
+	for tag := range o.overlay.statusByTag {
+		if _, found := seen[tag]; found {
+			continue
+		}
+		if synthetic := o.overlay.synthesize(tag); synthetic != nil {
+			result = append(result, synthetic)
+		}
+	}
+	return result
 }
 
 func (o *Observer) findStatusLocationLockHolderOnly(outbound string) int {
@@ -231,6 +306,14 @@ func (o *Observer) findStatusLocationLockHolderOnly(outbound string) int {
 		}
 	}
 	return -1
+}
+
+func (o *Observer) statusForTagLocked(outbound string) *OutboundStatus {
+	location := o.findStatusLocationLockHolderOnly(outbound)
+	if location == -1 {
+		return nil
+	}
+	return o.status[location]
 }
 
 func New(ctx context.Context, config *Config) (*Observer, error) {
@@ -248,6 +331,7 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 		ctx:        ctx,
 		ohm:        outboundManager,
 		dispatcher: dispatcher,
+		overlay:    newRuntimeFeedbackOverlay(),
 	}, nil
 }
 

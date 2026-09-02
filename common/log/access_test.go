@@ -6,6 +6,33 @@ import (
 	"testing"
 )
 
+func TestAccessMessageStringWithDelay(t *testing.T) {
+	msg := &AccessMessage{
+		From:   "1.1.1.1:1234",
+		To:     "example.com:443",
+		Status: AccessAccepted,
+		Delay:  123,
+	}
+
+	out := msg.String()
+	if !strings.Contains(out, "delay: 123") {
+		t.Fatalf("expected delay in access log, got %q", out)
+	}
+}
+
+func TestAccessMessageStringWithoutDelay(t *testing.T) {
+	msg := &AccessMessage{
+		From:   "1.1.1.1:1234",
+		To:     "example.com:443",
+		Status: AccessAccepted,
+	}
+
+	out := msg.String()
+	if strings.Contains(out, "delay:") {
+		t.Fatalf("unexpected delay in access log, got %q", out)
+	}
+}
+
 func TestAccessMessageStringWithEgress(t *testing.T) {
 	msg := &AccessMessage{
 		From:   "1.1.1.1:1234",
@@ -14,10 +41,9 @@ func TestAccessMessageStringWithEgress(t *testing.T) {
 		Egress: "v6",
 	}
 
-	got := msg.String()
-	want := "egress: v6"
-	if !strings.Contains(got, want) {
-		t.Fatalf("expected %q in access log, got %q", want, got)
+	out := msg.String()
+	if !strings.Contains(out, "egress: v6") {
+		t.Fatalf("expected egress in access log, got %q", out)
 	}
 }
 

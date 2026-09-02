@@ -13,6 +13,13 @@ Content-Length: 0
 
 
 `
+	http204response = `HTTP/1.1 204 No Content
+Connection: close
+Cache-Control: no-cache
+Content-Length: 0
+
+
+`
 )
 
 // ResponseConfig is the configuration for blackhole responses.
@@ -28,6 +35,15 @@ func (*NoneResponse) WriteTo(buf.Writer) int32 { return 0 }
 func (*HTTPResponse) WriteTo(writer buf.Writer) int32 {
 	b := buf.New()
 	common.Must2(b.WriteString(http403response))
+	n := b.Len()
+	writer.WriteMultiBuffer(buf.MultiBuffer{b})
+	return n
+}
+
+// WriteTo implements ResponseConfig.WriteTo().
+func (*HealthResponse) WriteTo(writer buf.Writer) int32 {
+	b := buf.New()
+	common.Must2(b.WriteString(http204response))
 	n := b.Len()
 	writer.WriteMultiBuffer(buf.MultiBuffer{b})
 	return n

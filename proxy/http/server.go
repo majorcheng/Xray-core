@@ -60,6 +60,17 @@ func isTimeout(err error) bool {
 	return ok && nerr.Timeout()
 }
 
+func shouldKeepAlive(request *http.Request) bool {
+	keepAlive := !request.Close
+	switch strings.ToLower(strings.TrimSpace(request.Header.Get("Proxy-Connection"))) {
+	case "keep-alive":
+		keepAlive = true
+	case "close":
+		keepAlive = false
+	}
+	return keepAlive
+}
+
 func parseBasicAuth(auth string) (username, password string, ok bool) {
 	const prefix = "Basic "
 	if !strings.HasPrefix(auth, prefix) {
@@ -99,17 +110,15 @@ func (s *Server) ProcessWithFirstbyte(ctx context.Context, network net.Network, 
 	if !proxy.IsRAWTransportWithoutSecurity(conn) {
 		inbound.CanSpliceCopy = 3
 	}
-	var reader *bufio.Reader
+	baseReader := io.Reader(readerOnly{conn})
 	if len(firstbyte) > 0 {
-		readerWithoutFirstbyte := bufio.NewReaderSize(readerOnly{conn}, buf.Size)
-		multiReader := io.MultiReader(bytes.NewReader(firstbyte), readerWithoutFirstbyte)
-		reader = bufio.NewReaderSize(multiReader, buf.Size)
-	} else {
-		reader = bufio.NewReaderSize(readerOnly{conn}, buf.Size)
+		baseReader = io.MultiReader(bytes.NewReader(firstbyte), baseReader)
 	}
+	reader := bufio.NewReaderSize(baseReader, buf.Size)
+	p := s.policy()
 
 Start:
-	if err := conn.SetReadDeadline(time.Now().Add(s.policy().Timeouts.Handshake)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(p.Timeouts.Handshake)); err != nil {
 		errors.LogInfoInner(ctx, err, "failed to set read deadline")
 	}
 
@@ -160,7 +169,7 @@ Start:
 		return s.handleConnect(ctx, request, reader, conn, dest, dispatcher, inbound)
 	}
 
-	keepAlive := (strings.TrimSpace(strings.ToLower(request.Header.Get("Proxy-Connection"))) == "keep-alive")
+	keepAlive := shouldKeepAlive(request)
 
 	err = s.handlePlainHTTP(ctx, request, conn, dest, dispatcher)
 	if err == errWaitAnother {
@@ -339,7 +348,9 @@ func readResponseAndHandle100Continue(r *bufio.Reader, req *http.Request, writer
 					return nil, errors.New("too big http 1xx response")
 				}
 			}
-			writer.Write(ResponseHeader1xx)
+			if _, err := writer.Write(ResponseHeader1xx); err != nil {
+				return nil, errors.New("failed to forward http 1xx response").Base(err)
+			}
 		}
 	}
 	return http.ReadResponse(r, req)

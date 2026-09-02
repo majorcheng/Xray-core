@@ -26,6 +26,17 @@ func TestHTTPResponseJSON(t *testing.T) {
 			},
 		},
 		{
+			Input: `{
+				"response": {
+					"type": "health"
+				}
+			}`,
+			Parser: loadJSON(creator),
+			Output: &blackhole.Config{
+				Response: serial.ToTypedMessage(&blackhole.HealthResponse{}),
+			},
+		},
+		{
 			Input:  `{}`,
 			Parser: loadJSON(creator),
 			Output: &blackhole.Config{},

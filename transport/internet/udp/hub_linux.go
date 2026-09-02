@@ -17,10 +17,16 @@ func RetrieveOriginalDest(oob []byte) net.Destination {
 	}
 	for _, msg := range msgs {
 		if msg.Header.Level == syscall.SOL_IP && msg.Header.Type == syscall.IP_RECVORIGDSTADDR {
+			if len(msg.Data) < 8 {
+				continue
+			}
 			ip := net.IPAddress(msg.Data[4:8])
 			port := net.PortFromBytes(msg.Data[2:4])
 			return net.UDPDestination(ip, port)
 		} else if msg.Header.Level == syscall.SOL_IPV6 && msg.Header.Type == unix.IPV6_RECVORIGDSTADDR {
+			if len(msg.Data) < 24 {
+				continue
+			}
 			ip := net.IPAddress(msg.Data[8:24])
 			port := net.PortFromBytes(msg.Data[2:4])
 			return net.UDPDestination(ip, port)

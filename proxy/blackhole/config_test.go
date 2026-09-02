@@ -24,3 +24,18 @@ func TestHTTPResponse(t *testing.T) {
 		t.Error("expected status code 403, but got ", response.StatusCode)
 	}
 }
+
+func TestHealthResponse(t *testing.T) {
+	buffer := buf.New()
+
+	healthResponse := new(HealthResponse)
+	healthResponse.WriteTo(buf.NewWriter(buffer))
+
+	reader := bufio.NewReader(buffer)
+	response, err := http.ReadResponse(reader, nil)
+	common.Must(err)
+
+	if response.StatusCode != http.StatusNoContent {
+		t.Error("expected status code 204, but got ", response.StatusCode)
+	}
+}

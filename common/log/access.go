@@ -3,6 +3,7 @@ package log
 import (
 	"context"
 	stdnet "net"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -29,6 +30,7 @@ type AccessMessage struct {
 	Reason interface{}
 	Email  string
 	Detour string
+	Delay  int64
 	Egress string
 	// recorded 用来保证同一条 access message 只写一次，避免真实拨号成功日志
 	// 与 dispatcher 兜底日志重复落盘。
@@ -59,6 +61,11 @@ func (m *AccessMessage) String() string {
 	if len(m.Email) > 0 {
 		builder.WriteString(" email: ")
 		builder.WriteString(m.Email)
+	}
+
+	if m.Delay > 0 {
+		builder.WriteString(" delay: ")
+		builder.WriteString(strconv.FormatInt(m.Delay, 10))
 	}
 
 	if len(m.Egress) > 0 {

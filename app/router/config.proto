@@ -94,6 +94,19 @@ message StrategyLeastLoadConfig {
   float tolerance = 6;
 }
 
+message StrategyChampionConfig {
+  // 连续不同观测快照上，挑战者完成晋级所需的胜场数。
+  int32 candidate_observation_count = 1;
+  // 连续不同观测快照上，preferred 完成回切所需的胜场数。
+  int32 preferred_observation_count = 2;
+  // 对 burst health ping 抖动的惩罚倍数；最终 score = average + deviation * scale。
+  float health_ping_jitter_scale = 3;
+  // preferred 回切允许的最大分差，int64 values of time.Duration
+  int64 preferred_max_delay_gap = 4;
+  // 显式指定默认首选擂主；为空或不在候选集时退回原有默认顺序。
+  string preferred_tag = 5;
+}
+
 message Config {
   enum DomainStrategy {
     // Use domain as is.

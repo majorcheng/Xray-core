@@ -21,6 +21,12 @@ func (*HTTPResponse) Build() (proto.Message, error) {
 	return new(blackhole.HTTPResponse), nil
 }
 
+type HealthResponse struct{}
+
+func (*HealthResponse) Build() (proto.Message, error) {
+	return new(blackhole.HealthResponse), nil
+}
+
 type BlackholeConfig struct {
 	Response json.RawMessage `json:"response"`
 }
@@ -44,8 +50,9 @@ func (v *BlackholeConfig) Build() (proto.Message, error) {
 
 var configLoader = NewJSONConfigLoader(
 	ConfigCreatorCache{
-		"none": func() interface{} { return new(NoneResponse) },
-		"http": func() interface{} { return new(HTTPResponse) },
+		"none":   func() interface{} { return new(NoneResponse) },
+		"http":   func() interface{} { return new(HTTPResponse) },
+		"health": func() interface{} { return new(HealthResponse) },
 	},
 	"type",
 	"",

@@ -539,10 +539,6 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 
 	account := request.User.Account.(*vless.MemoryAccount)
 
-	if account.Reverse != nil && request.Command != protocol.RequestCommandRvs {
-		return errors.New("for safety reasons, user " + account.ID.String() + " is not allowed to use forward proxy")
-	}
-
 	responseAddons := &encoding.Addons{
 		// Flow: requestAddons.Flow,
 	}
@@ -623,10 +619,28 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	bufferWriter.SetFlushNext()
 
 	if request.Command == protocol.RequestCommandRvs {
+		// Handle reverse proxy command
 		r, err := h.GetReverse(account)
 		if err != nil {
 			return err
 		}
+
+		// Pass sniffing configuration from inbound context to reverse proxy
+		// This allows traffic sniffing for reverse proxy connections
+		content := session.ContentFromContext(ctx)
+		if content != nil && content.SniffingRequest.Enabled {
+			// Sniffing is already configured in context from inbound handler
+			// The dispatcher will handle sniffing when bridge worker dispatches
+			errors.LogInfo(ctx, "reverse proxy with sniffing enabled")
+		} else {
+			// If no sniffing config in context, create empty content
+			// to ensure context is properly initialized
+			if content == nil {
+				content = new(session.Content)
+				ctx = session.ContextWithContent(ctx, content)
+			}
+		}
+
 		return r.NewMux(ctx, dispatcher.WrapLink(ctx, h.policyManager, h.stats, &transport.Link{Reader: clientReader, Writer: clientWriter}), h.observer)
 	}
 

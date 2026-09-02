@@ -15,6 +15,7 @@ func main() {
 	base.RootCommand.Commands = append(
 		[]*base.Command{
 			cmdRun,
+			cmdReload,
 			cmdVersion,
 		},
 		base.RootCommand.Commands...,

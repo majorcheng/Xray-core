@@ -392,6 +392,10 @@ func (c *Config) GetTLSConfig(opts ...Option) *tls.Config {
 		VerifyPeerCertificate:  randCarrier.verifyPeerCert,
 	}
 	randCarrier.Config = config
+	if c.AllowInsecure {
+		// 保留旧版 allowInsecure 语义：用户显式选择时跳过标准证书校验。
+		config.InsecureSkipVerify = true
+	}
 	if len(c.VerifyPeerCertByName) > 0 {
 		config.InsecureSkipVerify = true
 	} else {

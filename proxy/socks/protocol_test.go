@@ -10,7 +10,13 @@ import (
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	. "github.com/xtls/xray-core/proxy/socks"
+	"google.golang.org/protobuf/proto"
 )
+
+type mockAccount struct{}
+
+func (mockAccount) Equals(protocol.Account) bool { return false }
+func (mockAccount) ToProto() proto.Message       { return nil }
 
 func TestUDPEncoding(t *testing.T) {
 	b := buf.New()
@@ -32,6 +38,29 @@ func TestUDPEncoding(t *testing.T) {
 	common.Must(err)
 	if r := cmp.Diff(decodedPayload[0].Bytes(), content); r != "" {
 		t.Error(r)
+	}
+}
+
+func TestClientHandshakeRejectInvalidAccountType(t *testing.T) {
+	// Server replies:
+	// 1) auth method selection: socks5 + password auth
+	serverResp := []byte{0x05, 0x02}
+
+	req := &protocol.RequestHeader{
+		Version: 0x05,
+		Command: protocol.RequestCommandTCP,
+		Address: net.LocalHostIP,
+		Port:    80,
+		User: &protocol.MemoryUser{
+			Account: mockAccount{},
+		},
+	}
+
+	reader := bytes.NewReader(serverResp)
+	writer := &bytes.Buffer{}
+	_, err := ClientHandshake(req, reader, writer)
+	if err == nil {
+		t.Fatal("expected handshake to fail on invalid account type")
 	}
 }
 

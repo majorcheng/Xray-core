@@ -25,13 +25,17 @@ func GetOriginalDestination(conn stat.Connection) (net.Destination, error) {
 		return net.Destination{}, errors.New("failed to get sys fd").Base(err)
 	}
 	var dest net.Destination
+	var sockoptErr error
 	err = rawConn.Control(func(fd uintptr) {
 		level := syscall.IPPROTO_IP
-		if conn.RemoteAddr().String()[0] == '[' {
+		if local, ok := conn.LocalAddr().(*net.TCPAddr); ok && local.IP.To4() == nil {
+			level = syscall.IPPROTO_IPV6
+		} else if remote, ok := conn.RemoteAddr().(*net.TCPAddr); ok && remote.IP.To4() == nil {
 			level = syscall.IPPROTO_IPV6
 		}
 		addr, err := syscall.GetsockoptIPv6MTUInfo(int(fd), level, SO_ORIGINAL_DST)
 		if err != nil {
+			sockoptErr = err
 			errors.LogInfoInner(context.Background(), err, "failed to call getsockopt")
 			return
 		}
@@ -44,6 +48,9 @@ func GetOriginalDestination(conn stat.Connection) (net.Destination, error) {
 	})
 	if err != nil {
 		return net.Destination{}, errors.New("failed to control connection").Base(err)
+	}
+	if sockoptErr != nil {
+		return net.Destination{}, errors.New("failed to call getsockopt").Base(sockoptErr)
 	}
 	if !dest.IsValid() {
 		return net.Destination{}, errors.New("failed to call getsockopt")

@@ -226,6 +226,7 @@ func checkAddressPortStrategy(ctx context.Context, dest net.Destination, sockopt
 // access log 需要等到底层真正拨号成功后，才能可靠判断出口走的是 v4 还是 v6。
 func recordAccessLogOnDialSuccess(ctx context.Context, conn net.Conn, err error) (net.Conn, error) {
 	if err == nil && conn != nil {
+		session.SubmitOutboundDialSuccessToOriginator(ctx)
 		clog.RecordAccessMessageFromContextWithEgress(ctx, conn.RemoteAddr())
 	}
 	return conn, err

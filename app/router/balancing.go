@@ -31,12 +31,10 @@ type RoundRobinStrategy struct {
 
 func (s *RoundRobinStrategy) InjectContext(ctx context.Context) {
 	s.ctx = ctx
-	if len(s.FallbackTag) > 0 {
-		common.Must(core.RequireFeatures(s.ctx, func(observatory extension.Observatory) error {
-			s.observatory = observatory
-			return nil
-		}))
-	}
+	common.Must(core.OptionalFeatures(s.ctx, func(observatory extension.Observatory) error {
+		s.observatory = observatory
+		return nil
+	}))
 }
 
 func (s *RoundRobinStrategy) GetPrincipleTarget(strings []string) []string {
@@ -136,7 +134,7 @@ func (b *Balancer) SelectOutbounds() ([]string, error) {
 
 // GetPrincipleTarget implements routing.BalancerPrincipleTarget
 func (r *Router) GetPrincipleTarget(tag string) ([]string, error) {
-	if b, ok := (*r.balancers.Load())[tag]; ok {
+	if b, ok := r.balancers[tag]; ok {
 		if s, ok := b.strategy.(BalancingPrincipleTarget); ok {
 			candidates, err := b.SelectOutbounds()
 			if err != nil {
@@ -151,7 +149,7 @@ func (r *Router) GetPrincipleTarget(tag string) ([]string, error) {
 
 // SetOverrideTarget implements routing.BalancerOverrider
 func (r *Router) SetOverrideTarget(tag, target string) error {
-	if b, ok := (*r.balancers.Load())[tag]; ok {
+	if b, ok := r.balancers[tag]; ok {
 		b.override.Put(target)
 		return nil
 	}
@@ -160,7 +158,7 @@ func (r *Router) SetOverrideTarget(tag, target string) error {
 
 // GetOverrideTarget implements routing.BalancerOverrider
 func (r *Router) GetOverrideTarget(tag string) (string, error) {
-	if b, ok := (*r.balancers.Load())[tag]; ok {
+	if b, ok := r.balancers[tag]; ok {
 		return b.override.Get(), nil
 	}
 	return "", errors.New("cannot find tag")
