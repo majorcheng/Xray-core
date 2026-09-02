@@ -138,6 +138,13 @@ func (br *BalancingRule) Build(ohm outbound.Manager, dispatcher routing.Dispatch
 			fallbackTag: br.FallbackTag,
 			ohm:         ohm,
 		}, nil
+	case "champion":
+		return &Balancer{
+			selectors:   br.OutboundSelector,
+			strategy:    &ChampionStrategy{FallbackTag: br.FallbackTag},
+			fallbackTag: br.FallbackTag,
+			ohm:         ohm,
+		}, nil
 	case "leastload":
 		i, err := br.StrategySettings.GetInstance()
 		if err != nil {

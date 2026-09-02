@@ -498,8 +498,12 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 				accessMessage.Detour = inTag + " >> " + tag
 			}
 		}
-		log.Record(accessMessage)
+		if accessMessage.To == nil {
+			accessMessage.To = destination
+		}
 	}
 
 	handler.Dispatch(ctx, link)
+	// 没有真实系统拨号成功时（如 blackhole 或提前失败），这里兜底补打一条 access log。
+	log.RecordAccessMessageFromContext(ctx)
 }

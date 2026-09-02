@@ -236,3 +236,44 @@ func TestRouterConfig(t *testing.T) {
 		},
 	})
 }
+
+func TestRouterConfigChampionStrategy(t *testing.T) {
+	createParser := func() func(string) (proto.Message, error) {
+		return func(s string) (proto.Message, error) {
+			config := new(RouterConfig)
+			if err := json.Unmarshal([]byte(s), config); err != nil {
+				return nil, err
+			}
+			return config.Build()
+		}
+	}
+
+	runMultiTestCase(t, []TestCase{
+		{
+			Input: `{
+				"balancers": [
+					{
+						"tag": "b1",
+						"selector": ["test"],
+						"strategy": {
+							"type": "champion"
+						},
+						"fallbackTag": "fall"
+					}
+				]
+			}`,
+			Parser: createParser(),
+			Output: &router.Config{
+				DomainStrategy: router.Config_AsIs,
+				BalancingRule: []*router.BalancingRule{
+					{
+						Tag:              "b1",
+						OutboundSelector: []string{"test"},
+						Strategy:         "champion",
+						FallbackTag:      "fall",
+					},
+				},
+			},
+		},
+	})
+}

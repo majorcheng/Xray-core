@@ -14,6 +14,7 @@ const (
 	strategyRandom     string = "random"
 	strategyLeastPing  string = "leastping"
 	strategyRoundRobin string = "roundrobin"
+	strategyChampion   string = "champion"
 	strategyLeastLoad  string = "leastload"
 )
 
@@ -21,6 +22,7 @@ var strategyConfigLoader = NewJSONConfigLoader(ConfigCreatorCache{
 	strategyRandom:     func() interface{} { return new(strategyEmptyConfig) },
 	strategyLeastPing:  func() interface{} { return new(strategyEmptyConfig) },
 	strategyRoundRobin: func() interface{} { return new(strategyEmptyConfig) },
+	strategyChampion:   func() interface{} { return new(strategyEmptyConfig) },
 	strategyLeastLoad:  func() interface{} { return new(strategyLeastLoadConfig) },
 }, "type", "settings")
 
