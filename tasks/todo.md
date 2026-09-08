@@ -417,3 +417,33 @@ Git：当前 `main`、`origin/main` 无跟踪分叉，基线 `1e8e0429cfc943f481
 验证：`go run -mod=readonly ./main run -test -c docs/examples/champion-quality.json` 返回 `Configuration OK.`。该检查仅加载配置，不启动代理或验证示例地址的网络可达性；部署时应合入既有配置并替换 healthcheck URL 和出站标签。
 
 交付方式：检查本次任务文件的暂存差异，创建聚焦提交并普通推送至 `origin/main`；最终提交哈希和远端核验结果通过交付回复及 Git 记录提供。
+
+## 2026-09-08 跟进上游 `37ceb8b4` / `v26.9.8`
+
+- 目标：将官方 `git@github.com:XTLS/Xray-core.git` `main` 的最新 10 个提交合入当前本地 `main`，保留本地 Champion、observatory、reload 和相关自用改造。
+- 当前状态：工作区 tracked 文件干净；`main` 与 `origin/main` 同为 `5e669de4`，仅保留未跟踪 `.codegraph/`；当前分支与官方上游已分叉，本地独有 32 个提交、上游独有 10 个提交。
+- 上游目标：`37ceb8b4b65ee919fb772a8034e572f76a6e87a2`（`Xray-core v26.9.8`）；共同基线为 `cd4ce973e9f6ef3a7acf9a7030927b4143f9ea47`（`WebSocket client: Avoid panic before real dialing in delayDialConn (#6544)`）。
+- 上游变更范围：30 个文件，主要涉及 Go 1.27、REALITY 依赖、Freedom/TUN/Blackhole/XHTTP 修复，以及生成配置文件同步。
+- 合流预判：`git merge-tree --write-tree HEAD FETCH_HEAD` 预测 3 个冲突路径：`infra/conf/blackhole.go` 内容冲突、`proxy/blackhole/config.go` 修改/删除冲突、`proxy/blackhole/config.pb.go` 内容冲突；其余路径可自动合并。
+
+### 待执行
+
+- [x] 用户确认后，在隔离 worktree 创建同步分支并合入上游 `FETCH_HEAD`
+- [x] 处理 Blackhole 配置冲突，保留本地 health 响应语义并接纳上游配置结构
+- [x] 复核自动合并交叉文件与生成文件一致性
+- [x] 运行 Blackhole、Freedom、TUN、XHTTP、配置加载及本地 Champion 相关定向验证
+- [x] 验证通过后将主工作树快进到同步分支，更新本节 Review 小结并清理临时引用
+
+### 授权边界
+
+- 本轮已完成只读核验、上游 fetch、冲突预判、实际 merge、冲突解决、代码/生成文件修改、测试和主分支快进；默认不 push 到 `origin`，`.codegraph/` 保持原状。
+
+### Review 小结
+
+- 本轮从本地 `5e669de4` 合流官方 `XTLS/Xray-core` `37ceb8b4b65ee919fb772a8034e572f76a6e87a2`（`Xray-core v26.9.8`），在隔离分支生成 merge commit `50f1a9dc657744e4cda7b959d519db60a68c266c`，主工作树随后通过 `git merge --ff-only` 快进到该提交。
+- 上游本轮包含 Go 1.27 版本声明、REALITY 依赖更新、Freedom/TUN 兼容性修复、XHTTP `WaitReadCloser` 数据竞争修复、缓冲写入边界修复、Blackhole 自定义响应、Hysteria Unix socket 路径修复及 gRPC 依赖更新。
+- Blackhole 三处冲突已解决：采用上游 `Response{type, custom_response_data}` 配置结构；将本地 `health` 迁移为 `response.type = "health"`，运行时继续直接返回 HTTP 204；删除旧 TypedMessage 配置文件与旧生成消息，避免与上游新 wire 结构重复。
+- 自动合并交叉文件已复核：本地 Champion/observatory/relay feedback/reload、TLS `allowInsecure` 和 REALITY 缓存仍在；上游 Freedom/TUN、XHTTP、缓冲写入和配置生成变更已接纳。上游同时移除 outbound `proxySettings` 配置入口，改用 `streamSettings.sockopt.dialerProxy`，属于本轮上游既定行为变化。
+- 隔离 worktree 定向测试全部通过：Blackhole/配置、Champion/router、observatory/burst、XHTTP、outbound/main/core、Freedom/TUN/common-net、HTTP/SOCKS/reverse/REALITY、TLS，以及相关 race 测试；Hysteria、VLESS outbound、testing scenarios 编译检查通过。
+- 主工作树定向复验与 `git diff --check` 通过。一次合并包级测试触发既有资源依赖失败：`infra/conf::TestGeodataConfig` 缺少 `resources/geoip.dat`，`app/router::TestChinaSites` 缺少 `resources/geosite.dat`；本轮未下载资源，已用不依赖这些文件的定向测试完成验证。
+- 临时同步 worktree `/tmp/xray-core-upstream-sync-20260908-v2698` 与同步分支已保留至本轮最终核验结束，随后清理；未 push、未修改生产配置或 `.codegraph/`。
