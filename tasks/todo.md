@@ -391,6 +391,17 @@
 
 Git：当前 `main`、`origin/main` 无跟踪分叉，基线 `1e8e0429cfc943f481349930c5776f0005fb00b7`。所有修改留在本地工作区，未提交/推送或更改运行配置；原有 `.codegraph/` 未改动。
 
+## 2026-09-08 Champion debug vars 状态可视化
+
+- 目标：在现有 `/debug/vars` 的 `observatory` 之外，提供每个 balancer 的 Champion 实际擂主、质量建议、候选评分、挑战票数、冷却和 loss 摘要。
+- 范围：`app/router` 只读快照、`app/metrics` JSON 输出及聚焦测试；不改变选路、采样、配置或 wire protocol。
+- 完成标准：无 router/旧模式也能稳定返回空 `champion`；select/shadow 能区分实际 current 与 quality 建议；时间、unknown、loss 发送端口径可读。
+- 验证范围：状态快照单测、metrics `/debug/vars` 单测、相关 race；用户已明确授权本轮提交/推送。
+
+实现状态：已新增 `ChampionStatus` 只读快照，通过现有 metrics handler 在 `/debug/vars` 增加顶层 `champion` 字段；不新增 API 端口、protobuf 或选路行为。快照同时保留 `current` 与 `quality_current`，区分已用于决策的版本和底层质量快照版本，候选指标缺失时输出 JSON `null`，并标明客户端发送端 loss 口径。
+
+验证：`go test -mod=readonly ./app/router ./app/metrics -run 'TestRouterChampionStatus|TestChampionStatus|TestChampionQuality|TestChampionStrategy|TestBalancingRuleBuildChampion|TestMetrics' -count=1 -timeout=60s` 通过；`go test -mod=readonly -race ./app/router ./app/metrics -run 'TestRouterChampionStatus|TestChampionStatus|TestChampionQuality|TestMetrics' -count=1 -timeout=90s` 通过；`git diff --check` 与 gofmt 检查通过。原有 `.codegraph/` 未改动。
+
 ## 2026-09-08 Champion 配置示例与提交
 
 - 授权：用户明确要求提供配置 sample，并 commit & push 本次改造。

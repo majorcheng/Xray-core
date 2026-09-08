@@ -108,6 +108,30 @@ func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
 	return &Route{Context: ctx, outboundTag: tag, ruleTag: rule.RuleTag}, nil
 }
 
+// GetChampionStatus returns read-only Champion snapshots for metrics/debug vars.
+func (r *Router) GetChampionStatus() any {
+	r.mu.Lock()
+	balancers := make(map[string]*Balancer, len(r.balancers))
+	for tag, balancer := range r.balancers {
+		balancers[tag] = balancer
+	}
+	r.mu.Unlock()
+
+	result := make(map[string]ChampionStatus)
+	for tag, balancer := range balancers {
+		strategy, ok := balancer.strategy.(*ChampionStrategy)
+		if !ok {
+			continue
+		}
+		candidates, err := balancer.SelectOutbounds()
+		if err != nil {
+			candidates = nil
+		}
+		result[tag] = strategy.championStatus(candidates)
+	}
+	return result
+}
+
 // AddRule implements routing.Router.
 func (r *Router) AddRule(config *serial.TypedMessage, shouldAppend bool) error {
 	inst, err := config.GetInstance()

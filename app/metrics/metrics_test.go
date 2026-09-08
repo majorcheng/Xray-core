@@ -18,6 +18,24 @@ import (
 	feature_outbound "github.com/xtls/xray-core/features/outbound"
 )
 
+func TestMetricsChampionStatusWithoutRouter(t *testing.T) {
+	server := startMetricsTestServer(t)
+	defer server.Close()
+	var payload map[string]json.RawMessage
+	recorder := httptest.NewRecorder()
+	metricsHandler(t, server).httpHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/debug/vars", nil))
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	var champion map[string]interface{}
+	if err := json.Unmarshal(payload["champion"], &champion); err != nil {
+		t.Fatal(err)
+	}
+	if len(champion) != 0 {
+		t.Fatalf("expected empty champion status without router, got %v", champion)
+	}
+}
+
 func TestMetricsCanRestartInSameProcess(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		server := startMetricsTestServer(t)
@@ -132,6 +150,9 @@ func readMetricsVars(t *testing.T, server *core.Instance) {
 	}
 	if _, found := payload["observatory"]; !found {
 		t.Fatal("metrics vars missing observatory")
+	}
+	if _, found := payload["champion"]; !found {
+		t.Fatal("metrics vars missing champion")
 	}
 }
 

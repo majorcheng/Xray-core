@@ -10,6 +10,7 @@ import (
 	"github.com/xtls/xray-core/app/observatory"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/features/extension"
+	"github.com/xtls/xray-core/features/outbound"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -262,6 +263,45 @@ func TestChampionQualityModesAndProto(t *testing.T) {
 	}
 	if _, err := (&BalancingRule{Strategy: "champion", StrategySettings: serial.ToTypedMessage(&StrategyChampionConfig{QualityMode: "typo"})}).Build(nil, nil); err == nil {
 		t.Fatal("invalid protobuf mode accepted")
+	}
+}
+
+func TestChampionStatusSnapshot(t *testing.T) {
+	s := newQualityChampion()
+	p := &championQualityProvider{snapshot: championQualitySnapshot(time.Unix(1000, 0), 120*time.Millisecond, 80*time.Millisecond)}
+	p.snapshot.Outbounds[1].Loss = extension.QualityLoss{Sent: 1000, Lost: 10, Buckets: 4, Updated: p.snapshot.Time}
+	s.quality = p
+	s.PickOutbound([]string{"a", "b"})
+	status := s.championStatus([]string{"a", "b"})
+	if status.Mode != ChampionQualitySelect || status.Current != "a" || status.QualityCurrent != "a" {
+		t.Fatalf("unexpected champion status: %+v", status)
+	}
+	if status.CandidateCount != 2 || len(status.Candidates) != 2 || status.Candidates[1].ScoreMs == nil {
+		t.Fatalf("candidate quality details missing: %+v", status)
+	}
+	if !status.Candidates[1].LossKnown || status.Candidates[1].LossSent != 1000 || status.Candidates[1].LossEstimated != 10 {
+		t.Fatalf("candidate loss details missing: %+v", status.Candidates[1])
+	}
+}
+
+type championStatusManager struct {
+	outbound.Manager
+	tags []string
+}
+
+func (m *championStatusManager) Select([]string) []string { return append([]string(nil), m.tags...) }
+
+func TestRouterChampionStatusSnapshot(t *testing.T) {
+	s := newQualityChampion()
+	p := &championQualityProvider{snapshot: championQualitySnapshot(time.Unix(1000, 0), 120*time.Millisecond, 80*time.Millisecond)}
+	s.quality = p
+	s.PickOutbound([]string{"a", "b"})
+	r := &Router{balancers: map[string]*Balancer{
+		"out_us": {strategy: s, ohm: &championStatusManager{tags: []string{"a", "b"}}},
+	}}
+	result, ok := r.GetChampionStatus().(map[string]ChampionStatus)
+	if !ok || result["out_us"].Current != "b" || len(result["out_us"].Candidates) != 2 {
+		t.Fatalf("unexpected router champion status: %#v", result)
 	}
 }
 

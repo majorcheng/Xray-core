@@ -25,6 +25,7 @@ type championQualityState struct {
 	started                            time.Time
 	currentEvidence, candidateEvidence time.Time
 	runtimeEvidence                    time.Time
+	reason                             string
 }
 
 type championQualityCandidate struct {
@@ -316,6 +317,7 @@ func (s *ChampionStrategy) pickQuality(tags []string, snapshot extension.Outboun
 			}
 		}
 	}
+	state.reason = reason
 	selected := state.current
 	if decision.challenger == "" {
 		decision = *state

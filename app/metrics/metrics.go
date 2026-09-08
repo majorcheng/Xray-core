@@ -18,6 +18,7 @@ import (
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/outbound"
+	"github.com/xtls/xray-core/features/routing"
 	feature_stats "github.com/xtls/xray-core/features/stats"
 )
 
@@ -155,6 +156,7 @@ func (p *MetricsHandler) handleDebugVars(w http.ResponseWriter, r *http.Request)
 	})
 	vars["stats"] = marshalJSON(p.stats())
 	vars["observatory"] = marshalJSON(p.observatoryStatus())
+	vars["champion"] = marshalJSON(p.championStatus())
 
 	payload, err := json.Marshal(vars)
 	if err != nil {
@@ -162,6 +164,14 @@ func (p *MetricsHandler) handleDebugVars(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.Write(payload)
+}
+
+func (p *MetricsHandler) championStatus() interface{} {
+	feature := core.MustFromContext(p.ctx).GetFeature(routing.RouterType())
+	if provider, ok := feature.(interface{ GetChampionStatus() any }); ok {
+		return provider.GetChampionStatus()
+	}
+	return map[string]interface{}{}
 }
 
 func marshalJSON(value interface{}) json.RawMessage {

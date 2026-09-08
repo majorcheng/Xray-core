@@ -18,6 +18,26 @@
 
 想先观察建议，可设为 `shadow`，并使用 `info` 日志级别；需要查看保留现任的原因时使用 `debug`。既有 `fallbackTag` 和人工 override 仍按 Balancer 的原规则处理。`preferredMaxDelayGap` 只影响旧模式；新模式使用下面固定的接近条件。
 
+### 通过 `/debug/vars` 查看 Champion
+
+启用了 metrics API 后，现有命令可以分别查看 observatory 原始状态和 Champion 状态：
+
+```bash
+curl -s http://127.0.0.1:11/debug/vars | jq '.observatory'
+curl -s http://127.0.0.1:11/debug/vars | jq '.champion'
+curl -s http://127.0.0.1:11/debug/vars | jq '.champion.out_us'
+```
+
+`.champion` 是按 balancer tag 索引的只读快照。`.observatory` 仍是旧的 healthcheck 状态；`.champion` 额外包含：
+
+- `current`：实际接收新流的当前擂主；`quality_current`：综合质量模型记录的擂主。`shadow` 模式下两者可能不同。
+- `preferred`、`mode`、`state`、`reason`：首选线路、模式、当前可靠性状态和最近一次决策理由。
+- `challenger`、`challenge_kind`、`wins`、`required_wins`：正在挑战的线路、普通晋级或 preferred 接近回切、有效票数和门槛。
+- `last_evaluation_at`、`last_switch_at`、`challenge_started_at`、`cooldown_remaining_ms`：评估、切换、计票开始时间和剩余冷却；`snapshot_epoch/version` 是已用于决策的版本，`quality_snapshot_epoch/version` 是当前底层质量快照版本。
+- `candidates[]`：每个候选的 `state`、`known`、`reason`、`reliability_rank`、`score_ms`、`recent_score_ms`、`probe_ms`、`probe_updated`、`transport_rtt_ms`、`transport_rtt_updated`、`loss_sent`、`loss_estimated`、`loss_updated`、`loss_corrected` 和证据时间。
+
+没有有效样本的耗时字段为 `null`，不会用 0ms 或默认 500ms 冒充测量。`loss_sent` 和 `loss_estimated` 是客户端发送端判失视角，不能解读为精确双向丢包率。`current` 是当前实际选路，`quality_current` 是模型内部状态；排查 `shadow` 时优先比较这两个字段。
+
 ### 数据口径
 
 - standard 与 burst 均独立记录原始 healthcheck 结果，**新质量记录以请求无错误且 HTTP 2xx 为成功**，包括 server 的 204。非 2xx 是健康检查失败，不称为丢包。旧 observatory/overlay 的成功契约保留，旧 access log 的 `delay` 也保留原含义。
