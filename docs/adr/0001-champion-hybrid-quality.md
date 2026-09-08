@@ -20,7 +20,7 @@ client observatory → 候选代理链路 / XHTTP + H3 → server 本地 healthc
 
 | 实现前事实（off 模式保留） | 基线源码位置 |
 | --- | --- |
-| blackhole 的 `HealthResponse` 在本地生成 HTTP 204；不拨号外部目标 | `proxy/blackhole/config.go:43`、`proxy/blackhole/blackhole.go:35` |
+| blackhole 的 `response.type = "health"` 在本地生成 HTTP 204；不拨号外部目标 | `proxy/blackhole/blackhole.go:56` |
 | blackhole handler 写回后延迟关闭；204 无 body，不应拿连接寿命代替响应耗时 | `proxy/blackhole/blackhole.go:40` |
 | standard observatory 经指定 outbound 发 GET，计时到响应头返回并关闭 Body | `app/observatory/observer.go:189,229` |
 | burst 使用配置方法，HEAD 测到响应头，GET 还读取 Body | `app/observatory/burst/ping.go:55` |

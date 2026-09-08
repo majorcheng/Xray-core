@@ -8,7 +8,7 @@
 | balancer / 均衡组 | 选择候选并调用策略的实例 | 每组保留一个擂主；无需按目标站点建立评分组 |
 | champion / 擂主 | 当前优先接收新流的出站 | 切换不迁移已有连接 |
 | preferred | 用户指定的首选偏好 | 可靠性同级、证据新鲜且成本差不超过 `max(10ms, 最佳分数 × 5%)` 才适用；恢复不单独触发回切 |
-| local healthcheck / 本地健康检查 | client 经候选到 server，再由 server 本地返回 | 当前部署路径由用户说明；仓库 `HealthResponse` 支持本地 HTTP 204，未读取线上路由配置 |
+| local healthcheck / 本地健康检查 | client 经候选到 server，再由 server 本地返回 | 当前部署路径由用户说明；仓库 blackhole `response.type = "health"` 支持本地 HTTP 204，未读取线上路由配置 |
 | probe elapsed | observatory 的 healthcheck 往返耗时 | 含 client/server 传输、必要建链与 server 调度处理；不等于纯 QUIC RTT |
 | probe success / 探测成功 | 新质量记录要求 HTTP 请求无错误且返回 2xx | 覆盖 server 本地 204；旧 standard/burst 对外结果仍保持 HTTP 无错误即成功 |
 | probe failure rate | 同窗口内失败探测 / 完成探测 | 服务可用性指标，不是网络包丢失率 |
