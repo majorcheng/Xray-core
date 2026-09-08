@@ -8,8 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/xtls/xray-core/app/observatory"
 	"github.com/xtls/xray-core/common/dice"
 	"github.com/xtls/xray-core/common/errors"
+	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/routing"
 )
 
@@ -31,6 +33,7 @@ type HealthPing struct {
 	dispatcher    routing.Dispatcher
 	access        sync.Mutex
 	ticker        *time.Ticker
+	quality       *observatory.QualityStore
 
 	Settings *HealthPingSettings
 	Results  map[string]*HealthPingRTTS
@@ -185,7 +188,25 @@ func (h *HealthPing) doCheck(ctx context.Context, tags []string, duration time.D
 			}
 			timers = append(timers, time.AfterFunc(delay, func() {
 				errors.LogDebug(h.ctx, "checking ", handler)
-				delay, err := client.MeasureDelay(h.Settings.HttpMethod)
+				probeClient := client
+				var qualityProbe observatory.QualityProbe
+				if h.quality != nil && ctx.Err() == nil {
+					ttl := h.Settings.Interval*time.Duration(h.Settings.SamplingCount)*2 + h.Settings.Timeout
+					qualityProbe = h.quality.BeginProbe(handler, ttl)
+					if qualityProbe.FreshConnection {
+						probeClient = newPingClient(extension.FreshQualityProbe(h.ctx), h.dispatcher, h.Settings.Destination, h.Settings.Timeout, handler)
+					}
+				}
+				delay, status, err := probeClient.MeasureDelay(h.Settings.HttpMethod)
+				if h.quality != nil && ctx.Err() == nil {
+					failed, reason := err != nil, ""
+					if err != nil {
+						reason = err.Error()
+					} else if status < 200 || status >= 300 {
+						failed, reason = true, fmt.Sprintf("healthcheck returned HTTP %d", status)
+					}
+					h.quality.RecordProbe(qualityProbe, delay, failed, reason)
+				}
 				if err == nil {
 					ch <- &rtt{
 						handler: handler,
@@ -279,7 +300,7 @@ func (h *HealthPing) checkConnectivity() bool {
 		h.Settings.Connectivity,
 		h.Settings.Timeout,
 	)
-	if _, err := tester.MeasureDelay(h.Settings.HttpMethod); err != nil {
+	if _, _, err := tester.MeasureDelay(h.Settings.HttpMethod); err != nil {
 		return false
 	}
 	return true

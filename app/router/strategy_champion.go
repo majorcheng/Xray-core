@@ -37,8 +37,10 @@ type ChampionStrategy struct {
 	FallbackTag string
 	Settings    ChampionSettings
 
-	ctx         context.Context
-	observatory extension.Observatory
+	ctx          context.Context
+	observatory  extension.Observatory
+	quality      extension.OutboundQualityObservatory
+	qualityState championQualityState
 
 	mu                 sync.Mutex
 	index              int
@@ -54,6 +56,12 @@ func (s *ChampionStrategy) InjectContext(ctx context.Context) {
 	// champion 可以在无 observatory 时退化为普通轮询，因此使用 OptionalFeatures。
 	common.Must(core.OptionalFeatures(s.ctx, func(observatory extension.Observatory) error {
 		s.observatory = observatory
+		if s.Settings.QualityMode != ChampionQualityOff {
+			if quality, ok := observatory.(extension.OutboundQualityObservatory); ok {
+				s.quality = quality
+				quality.EnableOutboundQuality()
+			}
+		}
 		return nil
 	}))
 }
@@ -82,6 +90,12 @@ func (s *ChampionStrategy) logChampionSwitch(reason, oldTag, newTag string, oldD
 func (s *ChampionStrategy) PickOutbound(tags []string) string {
 	if len(tags) == 0 {
 		return ""
+	}
+	if s.quality != nil && (s.Settings.QualityMode == ChampionQualityShadow || s.Settings.QualityMode == ChampionQualitySelect) {
+		tag := s.pickQuality(tags, s.quality.GetOutboundQuality())
+		if s.Settings.QualityMode == ChampionQualitySelect {
+			return tag
+		}
 	}
 	if obs, ok := s.loadObservation(tags); ok {
 		return s.pickObserved(tags, obs)

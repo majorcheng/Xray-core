@@ -24,6 +24,7 @@ import (
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/net/cnc"
 	"github.com/xtls/xray-core/common/signal/done"
+	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/browser_dialer"
 	"github.com/xtls/xray-core/transport/internet/hysteria/congestion"
@@ -51,6 +52,9 @@ func getHTTPClient(ctx context.Context, dest net.Destination, streamSettings *in
 
 	if browser_dialer.HasBrowserDialer() && realityConfig == nil {
 		return &BrowserDialerClient{transportConfig: streamSettings.ProtocolSettings.(*Config)}, nil
+	}
+	if extension.IsFreshQualityProbe(ctx) {
+		return createHTTPClient(dest, streamSettings), nil
 	}
 
 	globalDialerAccess.Lock()
@@ -197,7 +201,13 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 		transport = &http3.Transport{
 			QUICConfig:      quicConfig,
 			TLSClientConfig: gotlsConfig,
-			Dial: func(ctx context.Context, addr string, tlsCfg *gotls.Config, cfg *quic.Config) (*quic.Conn, error) {
+			Dial: func(ctx context.Context, addr string, tlsCfg *gotls.Config, cfg *quic.Config) (_ *quic.Conn, dialErr error) {
+				quality := beginQUICQuality(streamSettings.OutboundQuality)
+				defer func() {
+					if dialErr != nil {
+						quality.failed(dialErr)
+					}
+				}()
 				udpHopDialer := func(addr *net.UDPAddr) (net.PacketConn, error) {
 					conn, err := internet.DialSystem(ctx, net.UDPDestination(net.IPAddress(addr.IP), net.Port(addr.Port)), streamSettings.SocketSettings)
 					if err != nil {
@@ -265,9 +275,12 @@ func createHTTPClient(dest net.Destination, streamSettings *internet.MemoryStrea
 
 				conn, err := tr.DialEarly(ctx, udpAddr, tlsCfg, cfg)
 				if err != nil {
+					tr.Close()
+					pktConn.Close()
 					return nil, err
 				}
 				context.AfterFunc(conn.Context(), func() { tr.Close(); pktConn.Close() })
+				quality.track(conn)
 
 				switch quicParams.Congestion {
 				case "reno":
@@ -392,6 +405,7 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		globalDialerAccess.Lock()
 		if streamSettings.DownloadSettings == nil {
 			streamSettings.DownloadSettings = common.Must2(internet.ToMemoryStreamConfig(transportConfiguration.DownloadSettings))
+			streamSettings.DownloadSettings.OutboundQuality = streamSettings.OutboundQuality
 			if streamSettings.SocketSettings != nil && streamSettings.SocketSettings.Penetrate {
 				streamSettings.DownloadSettings.SocketSettings = streamSettings.SocketSettings
 			}
@@ -453,6 +467,12 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 			}
 			if xmuxClient2 != nil && xmuxClient2 != xmuxClient {
 				xmuxClient2.DoneRunning()
+			}
+			if extension.IsFreshQualityProbe(ctx) {
+				common.Close(httpClient)
+				if httpClient2 != httpClient {
+					common.Close(httpClient2)
+				}
 			}
 		},
 	}

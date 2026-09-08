@@ -23,6 +23,7 @@ type Observer struct {
 	hp         *HealthPing
 	overlay    *observatory.RuntimeFeedbackOverlayBridge
 	monitored  map[string]struct{}
+	quality    *observatory.QualityStore
 
 	finished *done.Instance
 
@@ -154,7 +155,28 @@ func (o *Observer) Type() interface{} {
 	return extension.ObservatoryType()
 }
 
+func (o *Observer) EnableOutboundQuality() {
+	if o.quality != nil {
+		o.quality.Enable()
+	}
+}
+func (o *Observer) NewOutboundQualityReporter(tag string) extension.OutboundQualityReporter {
+	if o.quality == nil {
+		return nil
+	}
+	return o.quality.Reporter(tag)
+}
+func (o *Observer) GetOutboundQuality() extension.OutboundQualitySnapshot {
+	if o.quality == nil {
+		return extension.OutboundQualitySnapshot{}
+	}
+	return o.quality.Snapshot()
+}
+
 func (o *Observer) Start() error {
+	if o.quality != nil {
+		o.quality.Start()
+	}
 	if o.config != nil && len(o.config.SubjectSelector) != 0 {
 		o.finished = done.New()
 		o.hp.StartScheduler(func() ([]string, error) {
@@ -164,6 +186,9 @@ func (o *Observer) Start() error {
 			}
 
 			outbounds := hs.Select(o.config.SubjectSelector)
+			if o.quality != nil {
+				o.quality.Prune(outbounds)
+			}
 			o.statusLock.Lock()
 			o.setMonitoredTagsLocked(outbounds)
 			o.overlay.Prune(outbounds)
@@ -175,6 +200,9 @@ func (o *Observer) Start() error {
 }
 
 func (o *Observer) Close() error {
+	if o.quality != nil {
+		o.quality.Close()
+	}
 	if o.finished != nil {
 		o.hp.StopScheduler()
 		return o.finished.Close()
@@ -193,12 +221,15 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 		return nil, errors.New("Cannot get depended features").Base(err)
 	}
 	hp := NewHealthPing(ctx, dispatcher, config.PingConfig)
+	quality := observatory.NewQualityStore(config.SubjectSelector)
+	hp.quality = quality
 	return &Observer{
 		config:  config,
 		ctx:     ctx,
 		ohm:     outboundManager,
 		hp:      hp,
 		overlay: observatory.NewRuntimeFeedbackOverlayBridge(),
+		quality: quality,
 	}, nil
 }
 

@@ -105,6 +105,8 @@ message StrategyChampionConfig {
   int64 preferred_max_delay_gap = 4;
   // 显式指定默认首选擂主；为空或不在候选集时退回原有默认顺序。
   string preferred_tag = 5;
+  // off 保留旧策略；shadow 仅计算建议；select 启用 client/server 综合质量选路。
+  string quality_mode = 6;
 }
 
 message Config {

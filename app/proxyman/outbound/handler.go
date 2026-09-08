@@ -19,6 +19,7 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/common/session"
 	"github.com/xtls/xray-core/core"
+	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/features/outbound"
 	"github.com/xtls/xray-core/features/policy"
 	"github.com/xtls/xray-core/features/stats"
@@ -69,6 +70,7 @@ type Handler struct {
 	udp443          string
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
+	quality         extension.OutboundQualityObservatory
 }
 
 // NewHandler creates a new Handler based on the given configuration.
@@ -169,6 +171,16 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 	}
 
 	h.proxy = proxyHandler
+	if h.streamSettings != nil {
+		if err := core.OptionalFeatures(ctx, func(observer extension.Observatory) {
+			if quality, ok := observer.(extension.OutboundQualityObservatory); ok {
+				h.quality = quality
+			}
+		}); err != nil {
+			common.Close(h.proxy)
+			return nil, err
+		}
+	}
 	return h, nil
 }
 
@@ -209,7 +221,7 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
 		link.Writer = &buf.EndpointOverrideWriter{Writer: link.Writer, Dest: ob.Target.Address, OriginalDest: ob.OriginalTarget.Address}
 	}
 	relayLink := newRelayAwareLink(ctx, link)
-	if h.mux != nil {
+	if h.mux != nil && !extension.IsFreshQualityProbe(ctx) {
 		test := func(err error) {
 			if err != nil {
 				err := errors.New("failed to process mux outbound traffic").Base(err)
@@ -371,11 +383,22 @@ func (h *Handler) GetOutbound() proxy.Outbound {
 
 // Start implements common.Runnable.
 func (h *Handler) Start() error {
+	if h.quality != nil && h.streamSettings.OutboundQuality == nil {
+		h.streamSettings.OutboundQuality = h.quality.NewOutboundQualityReporter(h.tag)
+	}
 	return nil
+}
+
+// 删除出站只注销质量归属；已有连接继续遵循原有生命周期。
+func (h *Handler) closeQuality() {
+	if h.streamSettings != nil && h.streamSettings.OutboundQuality != nil {
+		h.streamSettings.OutboundQuality.Close()
+	}
 }
 
 // Close implements common.Closable.
 func (h *Handler) Close() error {
+	h.closeQuality()
 	common.Close(h.mux)
 	common.Close(h.proxy)
 	return nil

@@ -137,6 +137,9 @@ func (m *Manager) RemoveHandler(ctx context.Context, tag string) error {
 
 	m.tagsCache = &sync.Map{}
 
+	if h, ok := m.taggedHandler[tag].(*Handler); ok {
+		h.closeQuality()
+	}
 	delete(m.taggedHandler, tag)
 	if m.defaultHandler != nil && m.defaultHandler.Tag() == tag {
 		m.defaultHandler = nil

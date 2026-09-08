@@ -2,6 +2,7 @@ package conf_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 	_ "unsafe"
@@ -14,6 +15,46 @@ import (
 
 	"google.golang.org/protobuf/proto"
 )
+
+func TestRouterConfigChampionQualityMode(t *testing.T) {
+	for _, mode := range []string{"off", "shadow", "select", " SELECT ", "invalid"} {
+		t.Run(mode, func(t *testing.T) {
+			var config RouterConfig
+			input := fmt.Sprintf(`{"balancers":[{"tag":"quality","selector":["proxy-"],"strategy":{"type":"champion","settings":{"qualityMode":%q}}}]}`, mode)
+			if err := json.Unmarshal([]byte(input), &config); err != nil {
+				t.Fatal(err)
+			}
+			built, err := config.Build()
+			if mode == "invalid" {
+				if err == nil {
+					t.Fatal("invalid qualityMode accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings := built.BalancingRule[0].StrategySettings
+			if mode == "off" {
+				if settings != nil {
+					t.Fatal("explicit off changed default config")
+				}
+				return
+			}
+			value, err := settings.GetInstance()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := mode
+			if mode == " SELECT " {
+				want = "select"
+			}
+			if got := value.(*router.StrategyChampionConfig).QualityMode; got != want {
+				t.Fatalf("mode=%q want %q", got, want)
+			}
+		})
+	}
+}
 
 func TestRouterConfig(t *testing.T) {
 	createParser := func() func(string) (proto.Message, error) {

@@ -53,29 +53,30 @@ func newHTTPClient(ctxv context.Context, dispatcher routing.Dispatcher, handler 
 }
 
 // MeasureDelay returns the delay time of the request to dest
-func (s *pingClient) MeasureDelay(httpMethod string) (time.Duration, error) {
+func (s *pingClient) MeasureDelay(httpMethod string) (time.Duration, int, error) {
 	if s.httpClient == nil {
 		panic("pingClient not initialized")
 	}
 
 	req, err := http.NewRequest(httpMethod, s.destination, nil)
 	if err != nil {
-		return rttFailed, err
+		return rttFailed, 0, err
 	}
 	utils.TryDefaultHeadersWith(req.Header, "nav")
 
 	start := time.Now()
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return rttFailed, err
+		return rttFailed, 0, err
 	}
 	if httpMethod == http.MethodGet {
 		_, err = io.Copy(io.Discard, resp.Body)
 		if err != nil {
-			return rttFailed, err
+			resp.Body.Close()
+			return rttFailed, resp.StatusCode, err
 		}
 	}
 	resp.Body.Close()
 
-	return time.Since(start), nil
+	return time.Since(start), resp.StatusCode, nil
 }

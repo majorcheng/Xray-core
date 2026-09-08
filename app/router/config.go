@@ -146,12 +146,17 @@ func (br *BalancingRule) Build(ohm outbound.Manager, dispatcher routing.Dispatch
 			if !ok {
 				return nil, errors.New("not a StrategyChampionConfig").AtError()
 			}
+			qualityMode, err := ParseChampionQualityMode(s.QualityMode)
+			if err != nil {
+				return nil, err
+			}
 			settings = ChampionSettings{
 				CandidateObservationCount: int(s.CandidateObservationCount),
 				PreferredObservationCount: int(s.PreferredObservationCount),
 				HealthPingJitterScale:     float64(s.HealthPingJitterScale),
 				PreferredMaxDelayGap:      time.Duration(s.PreferredMaxDelayGap),
 				PreferredTag:              s.PreferredTag,
+				QualityMode:               qualityMode,
 			}.normalized()
 		}
 		return &Balancer{

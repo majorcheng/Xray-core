@@ -593,7 +593,9 @@ type StrategyChampionConfig struct {
 	// preferred 回切允许的最大分差，int64 values of time.Duration
 	PreferredMaxDelayGap int64 `protobuf:"varint,4,opt,name=preferred_max_delay_gap,json=preferredMaxDelayGap,proto3" json:"preferred_max_delay_gap,omitempty"`
 	// 显式指定默认首选擂主；为空或不在候选集时退回原有默认顺序。
-	PreferredTag  string `protobuf:"bytes,5,opt,name=preferred_tag,json=preferredTag,proto3" json:"preferred_tag,omitempty"`
+	PreferredTag string `protobuf:"bytes,5,opt,name=preferred_tag,json=preferredTag,proto3" json:"preferred_tag,omitempty"`
+	// off 保留旧策略；shadow 仅计算建议；select 启用 client/server 综合质量选路。
+	QualityMode   string `protobuf:"bytes,6,opt,name=quality_mode,json=qualityMode,proto3" json:"quality_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -659,6 +661,13 @@ func (x *StrategyChampionConfig) GetPreferredMaxDelayGap() int64 {
 func (x *StrategyChampionConfig) GetPreferredTag() string {
 	if x != nil {
 		return x.PreferredTag
+	}
+	return ""
+}
+
+func (x *StrategyChampionConfig) GetQualityMode() string {
+	if x != nil {
+		return x.QualityMode
 	}
 	return ""
 }
@@ -780,13 +789,14 @@ const file_app_router_config_proto_rawDesc = "" +
 	"\tbaselines\x18\x03 \x03(\x03R\tbaselines\x12\x1a\n" +
 	"\bexpected\x18\x04 \x01(\x05R\bexpected\x12\x16\n" +
 	"\x06maxRTT\x18\x05 \x01(\x03R\x06maxRTT\x12\x1c\n" +
-	"\ttolerance\x18\x06 \x01(\x02R\ttolerance\"\xad\x02\n" +
+	"\ttolerance\x18\x06 \x01(\x02R\ttolerance\"\xd0\x02\n" +
 	"\x16StrategyChampionConfig\x12>\n" +
 	"\x1bcandidate_observation_count\x18\x01 \x01(\x05R\x19candidateObservationCount\x12>\n" +
 	"\x1bpreferred_observation_count\x18\x02 \x01(\x05R\x19preferredObservationCount\x127\n" +
 	"\x18health_ping_jitter_scale\x18\x03 \x01(\x02R\x15healthPingJitterScale\x125\n" +
 	"\x17preferred_max_delay_gap\x18\x04 \x01(\x03R\x14preferredMaxDelayGap\x12#\n" +
-	"\rpreferred_tag\x18\x05 \x01(\tR\fpreferredTag\"\x96\x02\n" +
+	"\rpreferred_tag\x18\x05 \x01(\tR\fpreferredTag\x12!\n" +
+	"\fquality_mode\x18\x06 \x01(\tR\vqualityMode\"\x96\x02\n" +
 	"\x06Config\x12O\n" +
 	"\x0fdomain_strategy\x18\x01 \x01(\x0e2&.xray.app.router.Config.DomainStrategyR\x0edomainStrategy\x120\n" +
 	"\x04rule\x18\x02 \x03(\v2\x1c.xray.app.router.RoutingRuleR\x04rule\x12E\n" +

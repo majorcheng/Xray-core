@@ -282,3 +282,127 @@
 - 上游本轮主要覆盖 DNS route probe 抽取到 `common/utils`、DNS outbound / Tunnel inbound 配置字段重命名、XHTTP stream-up 内存泄漏修复、freedom `finalRules` 的 `AsIs` IPv4 偏好、XDNS finalmask dialerProxy 边界，以及版本号更新到 `v26.5.9`。
 - 首次 `timeout 180s go test ./app/dns ./proxy/dns ./infra/conf -count=1` 中，`./infra/conf` 因缺少 `resources/geoip.dat` 失败；按 `tasks/lessons.md` 记录的稳定地址补齐 `geoip.dat` 与 `geosite.dat` 后，`timeout 180s go test ./infra/conf -count=1` 通过。
 - 定向验证已通过：`timeout 180s go test ./app/dns ./proxy/dns ./infra/conf -count=1` 中的 `./app/dns`、`./proxy/dns` 通过，`./infra/conf` 补资源后复测通过；`timeout 180s go test ./proxy/freedom ./transport/internet/finalmask/... -count=1`、`timeout 180s go test ./transport/internet/splithttp -count=1`、`timeout 180s go test ./app/router -run 'TestChampion|TestBalancingRuleBuildChampion' -count=1`、`timeout 180s go test ./app/observatory ./app/observatory/burst -count=1`、`timeout 180s go test ./common/utils ./core ./proxy/dokodemo ./proxy/vless/inbound -count=1` 均已通过。
+
+## 2026-09-06 Champion 综合链路质量设计
+
+- 范围：方案访谈与文档；不修改生产代码、运行配置或既有选路行为。
+- 文档：`docs/adr/0001-champion-hybrid-quality.md`、`CONTEXT.md`、`docs/glossary.md`、本计划。
+- 完成标准：明确主动探测、实际业务与传输层指标的口径、归因、聚合、评分、切换、兼容和验证范围；用户未确认的决策保持 Proposed。
+- 验证：当前源码调用链、依赖接口与文档内部一致性；文档修改运行 `git diff --check`，不运行生产网络实验。
+
+- [x] 读取 `grill-with-docs` 并核实关联技能可用性，刷新当前源码与 Git 状态
+- [x] 核实业务首响应、连接复用和丢包指标的可测量边界
+- [x] 写入 Proposed ADR 与领域术语表，列出建议参数和验收场景
+- [x] 记录用户确认的 preferred 原则：可靠性和质量优先，仅质量接近时偏好首选，恢复不单独触发回切
+- [x] 根据访谈收敛影响选路行为的关键决策
+- [x] 检查文档与引用，记录本轮产物和待决事项
+
+技能说明：初次草案时没有 `Skill` 工具，也未找到两个关联技能；后续回合 `grilling` 和 `domain-modeling` 已可用，主代理完整读取技能及 CONTEXT/ADR 格式说明后继续执行。Skill 工具仍未暴露，直接读取本地说明；按技能建立设计树、批次访谈和纯领域词汇表。
+
+前阶段结果：Proposed ADR、`CONTEXT.md` 与指标口径文档已落盘；核实 TCP_INFO 与 QUIC ConnectionStats 可用接口。访谈已确认每个 balancer 一个擂主、首版 XHTTP + H3、稳定优先的 20-30s 质量切换、preferred 的可靠性优先原则与 `max(10ms, 最佳分数 × 5%)` 接近阈值。先前的约 1% 业务试用和目标首响应设计已由下节 client/server 范围澄清取代；具体系数、周期和启用方式仍待校准与评审。未修改生产代码或配置。
+
+前阶段检查：已核查 XHTTP 在配置层映射到 `splithttp`，H3 的 ALPN 选择与 XmuxManager 复用边界；实际 OS 留到构建/集成时核验。文档空白检查通过，未执行行为测试、生产探测或网络故障注入；后续按下节修正后的范围推进。
+
+## 2026-09-07 Champion 复用 server 本地 healthcheck
+
+- 范围：依据用户澄清修正设计资料；用户只关心 client/server，现有 observatory URL 已由 server 本地直接返回。
+- 影响文件：`CONTEXT.md`、`docs/glossary.md`、`docs/adr/0001-champion-hybrid-quality.md`、本计划。
+- 完成标准：现有 healthcheck 进入主动基线，正常流量的 QUIC 统计提供补充；移除独立 OPTIONS 心跳、业务试用配额和目标业务对照组要求；保留 preferred 与抑抖共识。
+- 验证范围：只读核查本地 healthcheck 能力和探测口径，检查文档一致性及空白；不执行生产探测或 Go 行为测试。
+
+- [x] 记录用户提供的实际部署前提，撤销“固定 URL 必经外部目标”的推断
+- [x] 核查 server 本地响应和 standard/burst 探测的实际代码边界
+- [x] 同步领域词汇、指标口径与 ADR，移除因错误前提而增加的设计
+- [x] 检查文档并记录本轮结果
+
+本轮结果：`HealthResponse` 可在 server 本地直接返回 HTTP 204；实际部署为本地返回由用户确认，未读取线上配置。现有 observatory healthcheck 重新作为评分基线，正常流量所在 QUIC 连接提供 RTT/loss/故障补充，keepalive 作为保活；无需独立 OPTIONS 心跳、1% 业务试用或目标对照组。探测按时间调度，不能把用户流量百分比当作心跳预算。源码另表明 standard/burst 均未校验响应状态码，已记录“HTTP 可响应”和“healthcheck 匹配”的区别，没有修改旧判定契约。
+
+本轮验证：`git diff --check` 通过，三份新增文档分别执行 `git diff --no-index --check` 均无空白错误输出；退出 1 表示文件差异。相关本地文档链接目标存在。未运行 Go 测试、线上探测或网络故障注入，未提交或推送；`.codegraph/` 保留原状，完整设计仍为 Proposed。
+
+## 2026-09-07 Champion 完整逻辑评审
+
+- 范围：说明并完善完整决策流程，继续设计阶段，不修改生产代码或配置。
+- 影响文件：Champion ADR、必要的指标术语及本计划。
+- 完成标准：从来源、快照、资格、排序到切换提交形成可复核流程；覆盖冷启动、未知、全不可用、恢复、preferred、第三候选和并发。
+- 验证范围：当前源码及已有测试契约只读核验；文档场景推演与空白检查。
+
+- [x] 对照当前 Champion、评分与 Balancer 入口确认现状
+- [x] 明确三类切换、preferred 与普通挑战的先后顺序及缺样本处理
+- [x] 补充完整流程、推荐参数与具体场景到 ADR
+- [x] 核查文档一致性并完成完整逻辑说明
+
+评审结果：ADR 第 7 节已明确资格/unknown、冷启动与 fallback、全候选排名、故障接管/普通晋级/preferred 接近回切、有效桶计票、恢复及具体场景。preferred 接近但未满足普通晋级条件时不阻挡 best 晋级；没有 runtime 样本不能获得零 loss 奖励，但备用也不需要与现任相等的业务量。新快照从原始来源聚合，避免旧 overlay 的 synthetic 1ms 和旧评分失败惩罚重复进入新模型。
+
+故障判定补充：10s 内两次失败的初值限定为同阶段连续、独立、可归因且无更新成功的完整连接尝试；大量成功中的两次偶发失败只进入失败率。较新同阶段成功可打断连续计数，但不能清空滚动失败历史。
+
+验证记录：已只读核验 Champion/Balance 主调用与已有无观测轮询、preferred 缺失、同快照计票测试；文档场景为逻辑推演，未执行 Go 测试或实网验证。文档 Git 空白检查通过，生产代码、运行配置和提交历史未改；阈值、采样节奏与启用方式仍为待校准/评审的提案。
+
+## 2026-09-07 Champion 丢包处理说明
+
+- 范围：解释并补充丢包采集、评分、抑抖和方向边界；影响 ADR、指标术语与本计划，不修改代码或配置。
+- [x] 只读核验锁定 quic-go 提交的 ConnectionStats、发送计数与判失逻辑
+- [x] 说明控制包分母、计数回落、净差抵消、小样本与单次尖峰的限制
+- [x] 补充 loss 成本算例与客户端/服务端发送判失覆盖边界
+- [x] 检查本轮文档空白与结果记录
+
+结果：协议栈已有丢包恢复，新 Champion 的 loss 输入尚未实现。仅客户端快照能提供本端发送判失压力，不能承诺精确下行或双向丢包；server 采集/反馈尚需另行设计。5% 是拟议归一化参考而非判死线；healthcheck 重发后成功仍可有 loss 成本。未安装依赖、构建或执行网络故障实验。
+
+验证：按 GitHub Raw 精确提交只读核验公开 ConnectionStats、SentPacket 和 detectLostPackets，主代理抽查关键源码；`git diff --check` 与新增文档独立空白检查通过。文档算例仅用于解释拟议权重，未执行 Go 或实际丢包实验。
+
+## 2026-09-07 Champion 综合质量实现
+
+- 授权：用户明确要求按已评审方案修改；完成客户端实现、配置、文档与相关本地验证，服务端统计回传和生产部署不在范围内。
+- 影响：现有 observatory 与 burst、XHTTP/H3 物理连接生命周期、outbound 内存传输配置、Champion、router 配置及聚焦测试。
+- 完成标准：healthcheck 与客户端 QUIC 指标独立聚合；全候选比较、preferred 接近规则、持续证据/故障快速路径、unknown 与恢复语义完整；提供 off/shadow/select 启用入口。
+- 验证：相关 package 聚焦测试、必要的并发检查和配置生成一致性；不执行生产网络实验。
+
+- [x] 检查 Git、当前实现边界和本地构建/生成条件
+- [x] 实现分来源质量快照、出站代次、连接生命周期与被动统计
+- [x] 接通 standard/burst 原始 healthcheck 结果与 H3 采样
+- [x] 实现 Champion 新模式、可靠性/质量比较、抑抖、故障与日志
+- [x] 同步配置、生成文件、文档与聚焦回归覆盖
+- [x] 执行授权范围内的验证，修复本次改动导致的问题并完成交付记录
+
+环境与授权：Go 1.27.1；用户随后明确“允许下载并完成生成与测试”。已下载 go.mod 锁定缺失模块，临时工具目录 `/tmp/xray-champion-tools.C6zZ70` 中使用 protoc 3.21.12 与缓存源码构建的 protoc-gen-go 1.36.11，仅生成 `app/router/config.pb.go`。未新增或升级项目依赖，`go.mod` / `go.sum` 无改动。缺少 unzip 时使用 Python 标准 zipfile 解压下载产物。
+
+实现结果：
+
+- 新增可选质量接口和共享有界聚合器，standard/burst 记录原始 2xx healthcheck；旧 overlay 与 access log delay 保留原语义。
+- XHTTP/H3 按物理连接记录握手、RTT/波动、发送端判失与关闭；处理计数回落、迟到事件、重复关闭和出站代次。handler 启动时注册，Remove 时注销质量归属，不关闭已有业务连接。
+- 探测、握手和已建立传输故障分阶段累计；恢复 3 个有效周期，新握手失败后的 healthcheck 绕过 mux/xmux 建立私有连接验证，完成后释放。
+- `qualityMode=off|shadow|select` 默认 off。新决策支持全候选挑战、可靠性优先、preferred 接近规则、持续证据、性能冷却、即时故障接管及 unknown；切换日志保留提交时的有效票数并区分实测指标与评分。
+- 补齐 `docs/champion.md` 使用片段，ADR 改为 Accepted，指标词汇同步。首版没有业务试用、额外心跳、server 统计回传或目标首响应采集。
+
+最终验证（均实际执行）：
+
+- `go test -mod=readonly ./app/observatory ./app/observatory/burst ./transport/internet/splithttp -count=1 -timeout=90s`：通过。
+- `go test -mod=readonly ./app/router ./infra/conf -run 'TestChampion|TestBalancingRuleBuildChampion|TestRouterConfigChampion' -count=1 -timeout=60s`：通过。
+- `go test -mod=readonly ./app/proxyman/outbound ./main -run 'TestOutboundQuality|TestInterfaces|TestRelay' -count=1 -timeout=90s`：通过；main 仅完成编译，该正则无 main 测试。
+- `go test -mod=readonly -race ./app/observatory ./app/observatory/burst ./app/router ./app/proxyman/outbound ./transport/internet/splithttp -run 'TestQuality|TestChampionQuality|TestOutboundQuality|TestQUICQuality' -count=1 -timeout=90s`：最终通过。
+- `BenchmarkChampionQualityPick`（16 个候选、同一快照、100ms 微基准）：发现并去掉稳态重复评分分配；本次 select 从约 9697ns / 27472B / 38 allocs 降至约 47.92ns / 0B / 0 allocs，off 约 1237ns / 2144B / 10 allocs。该基准使用固定观测替身，只衡量稳态选择开销，不代表网络或全代理吞吐。
+- 所有本次 Go 文件通过 gofmt 检查；在临时输出目录重生成 router protobuf，与工作区生成文件 `cmp` 一致；Git 空白检查通过。
+
+验证边界与已知问题：
+
+- H3 检查使用真实 loopback QUIC 握手、HTTP 204 往返、物理连接统计及正常关闭；healthcheck 来源测试将 tagged 拨号替换为本机服务，验证 raw/overlay 隔离，不冒充完整代理部署。
+- 首次 H3 race 检查发现既有服务端动态证书刷新与握手读取竞争（`transport/internet/tls/config.go:90,253`）。本次测试改用固定标准 TLS 证书后质量路径通过；未修改该服务端问题，详情见 `DEBUG.md`。
+- 未执行广域网丢包注入、服务端发送统计反馈、生产部署或全仓资源相关回归；客户端 loss 仍是发送端判失压力，不能解释为精确双向丢包率。系数未作生产校准。
+- 热重载切回 off 后已有采样器随 observatory 实例关闭才退出；较早时延基线排除失败/loss 桶，但纯时延劣化可能逐步进入历史基线。
+
+Git：当前 `main`、`origin/main` 无跟踪分叉，基线 `1e8e0429cfc943f481349930c5776f0005fb00b7`。所有修改留在本地工作区，未提交/推送或更改运行配置；原有 `.codegraph/` 未改动。
+
+## 2026-09-08 Champion 配置示例与提交
+
+- 授权：用户明确要求提供配置 sample，并 commit & push 本次改造。
+- 范围：本次 Champion 源码、测试、生成文件、设计/使用文档与 JSON 配置片段；不包含原有 `.codegraph/`。
+- 完成标准：sample 通过实际配置加载检查；提交仅包含本次任务文件，普通推送至既有 `origin/main`。
+
+- [x] 核验工作区、分支、upstream 与实际 push 地址
+- [x] 提供 `docs/examples/champion-quality.json`，补齐业务路由入口与合并说明
+- [x] 使用实际 Xray 配置加载器验证 sample
+
+本轮生产 Go 代码未改动，沿用前阶段已完成的聚焦回归、race 和生成一致性结果；新增验证仅针对 JSON sample。实际 push 地址为 `git@github.com:majorcheng/Xray-core.git`，本轮 commit/push 使用用户明确授权。
+
+验证：`go run -mod=readonly ./main run -test -c docs/examples/champion-quality.json` 返回 `Configuration OK.`。该检查仅加载配置，不启动代理或验证示例地址的网络可达性；部署时应合入既有配置并替换 healthcheck URL 和出站标签。
+
+交付方式：检查本次任务文件的暂存差异，创建聚焦提交并普通推送至 `origin/main`；最终提交哈希和远端核验结果通过交付回复及 Git 记录提供。

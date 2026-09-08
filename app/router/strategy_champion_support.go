@@ -1,6 +1,7 @@
 package router
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -15,6 +16,24 @@ const (
 	championMinFailPenaltyMs       = 50
 )
 
+const (
+	ChampionQualityOff    = "off"
+	ChampionQualityShadow = "shadow"
+	ChampionQualitySelect = "select"
+)
+
+func ParseChampionQualityMode(mode string) (string, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "", ChampionQualityOff:
+		return ChampionQualityOff, nil
+	case ChampionQualityShadow, ChampionQualitySelect:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unknown champion qualityMode %q (want off, shadow or select)", mode)
+	}
+}
+
 // ChampionSettings 保存 champion 抗抖动参数。
 type ChampionSettings struct {
 	CandidateObservationCount int
@@ -22,6 +41,7 @@ type ChampionSettings struct {
 	HealthPingJitterScale     float64
 	PreferredMaxDelayGap      time.Duration
 	PreferredTag              string
+	QualityMode               string
 }
 
 type championDecision struct {
@@ -52,6 +72,7 @@ func defaultChampionSettings() ChampionSettings {
 		PreferredObservationCount: 6,
 		HealthPingJitterScale:     1,
 		PreferredMaxDelayGap:      80 * time.Millisecond,
+		QualityMode:               ChampionQualityOff,
 	}
 }
 
@@ -71,6 +92,9 @@ func (s ChampionSettings) normalized() ChampionSettings {
 		s.PreferredMaxDelayGap = defaults.PreferredMaxDelayGap
 	}
 	s.PreferredTag = strings.TrimSpace(s.PreferredTag)
+	if s.QualityMode == "" {
+		s.QualityMode = ChampionQualityOff
+	}
 	return s
 }
 

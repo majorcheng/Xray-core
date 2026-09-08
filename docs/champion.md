@@ -1,5 +1,62 @@
 # Champion 策略说明与配置指南
 
+## 综合质量模式：client/server 链路
+
+`strategy.settings.qualityMode` 控制本地 healthcheck 与客户端 QUIC 统计的综合选路。默认 `off`；本文后续第 1–15 节描述保留的旧模式。新模式的实现入口为 `app/router/strategy_champion_quality.go`，数据来源为 `app/observatory/quality.go` 和 `transport/internet/splithttp/quality.go`。
+
+| 模式 | 实际选择 | 质量采集 |
+| --- | --- | --- |
+| `off`（默认） | 旧 Champion | 冷启动不启用采样 |
+| `shadow` | 旧 Champion；另行记录新规则的建议 | 启用 |
+| `select` | 新的综合质量规则 | 启用 |
+
+模式名忽略首尾空格及大小写，未知值报配置错误。没有 observatory 时保留轮询语义。采集一经启用就随该 observatory 实例存活；热重载切回 `off` 会停止新规则参与选路，采样器在实例关闭时退出。
+
+可直接参考 [champion-quality.json](examples/champion-quality.json)，将其中的 observatory、balancer 和路由规则合入现有客户端配置。该文件是配置片段，线路与入站继续由既有配置定义：例如现有 XHTTP + H3 出站为 `proxy-hk`、`proxy-sg`、`proxy-jp`，两个 selector 的 `proxy-` 前缀会匹配它们。
+
+`probeURL` 应替换为你已有的、由 server 本地直接返回 2xx（如 204）的 healthcheck，并保留其 server 路由。将 `preferredTag` 改为实际偏好出站。示例 `network: "tcp,udp"` 是兜底规则，应放在现有直连、拦截等更具体的规则之后；也可将其条件改为仅匹配需要自动选路的入站或业务。
+
+想先观察建议，可设为 `shadow`，并使用 `info` 日志级别；需要查看保留现任的原因时使用 `debug`。既有 `fallbackTag` 和人工 override 仍按 Balancer 的原规则处理。`preferredMaxDelayGap` 只影响旧模式；新模式使用下面固定的接近条件。
+
+### 数据口径
+
+- standard 与 burst 均独立记录原始 healthcheck 结果，**新质量记录以请求无错误且 HTTP 2xx 为成功**，包括 server 的 204。非 2xx 是健康检查失败，不称为丢包。旧 observatory/overlay 的成功契约保留，旧 access log 的 `delay` 也保留原含义。
+- 首版采集 XHTTP + H3 实际物理 QUIC 连接的握手耗时、平滑 RTT、波动、累计发送与判失变化、异常关闭。握手完成信号才算建连成功；复用子流不会重新计一次握手或复制包数。
+- 普通目标网站的首响应、下载耗时及 server→目标的错误不作为新模型输入。上传/下载分离的 H3 连接分别采样，归入其 outbound；链式代理统计只归属实际传输 hop。
+- keepalive 保活及已有 healthcheck 按时间运行，不分配业务试用配额，也不新增 server 协议。
+
+### 排名与切换
+
+先排除 `unavailable` / `recovering`，再比较可靠性等级，同级比较分数。所有候选都可挑战当前擂主。无有效 healthcheck 的指标为 `unknown`，不填入 500ms、1ms 或零丢包。冷启动可临时选择未验证线路；现任只是缺少新观测时保留选择并暂停晋级；全不可用时返回空 tag 交给 fallback。
+
+```text
+P = healthcheck 均值 + healthPingJitterScale × 波动
+D = 建连 / QUIC RTT 相对各自较早基线的劣化成本，取较大值
+F = 探测、握手、异常关闭失败成本，取较大值
+L = 客户端 QUIC 发送判失压力成本
+S = P + D + max(F, L)
+```
+
+D 同时考虑均值与波动的增长。F/L 按有效样本数、时间覆盖与新鲜度降权；它们是选路成本，不是一次请求耗时。运行时窗口为 60 秒，每 5 秒采样；较早基线最多 10 分钟，排除最近 60 秒及有失败、loss 或修正的桶。healthcheck 保留最多 20 个样本，有效期按各出站实际探测节奏计算。
+
+普通晋级要求可靠性持续更好，或同级下滚动分数与近期分数均改善至少 `max(20ms, 现任分数 × 15%)`。preferred 只有同级、新鲜且 `S_preferred - S_best <= max(10ms, S_best × 5%)` 才可获得偏好；不能挡住已经达到普通晋级门槛的其他候选。
+
+普通晋级默认需要 4 个有新证据的周期，且从首票起持续至少 20 秒；preferred 接近回切默认需要 6 个周期，持续至少 30 秒。性能切换间隔至少 30 秒。重复读取、无关线路更新、单次旧尖峰都不能补足票数；长于 10 秒没有评估会重新累计。探测稀疏时会更慢，不能保证固定 20–30 秒切换。
+
+10 秒内两个独立、连续的同阶段物理连接故障，或两个不同周期的连续 healthcheck 失败，可确认不可用；明确故障在下一次新流选择时跳过性能冷却。握手失败、已建立连接故障和 healthcheck 分开累计，不能相加成“两次”。新握手成功只恢复握手阶段；本地 healthcheck 成功可验证已建立传输路径。恢复要求对应阶段 3 个不同有效周期成功，仅恢复比较资格。握手阶段失败后，现有 healthcheck 会临时绕过 mux/xmux，使用独立连接验证；完成后关闭该私有 H3 客户端。
+
+### 丢包与日志
+
+客户端读取的是**客户端发送端判失压力**，包含控制包、重发及 ACK 路径影响，不能称为精确下行或双向丢包率。有效性起点为至少 50 个发送包、3 个非空桶；500 包获得完整样本权重，仍按年龄衰减。迟到 ACK 导致计数回落、零分母或不合理增量时，该区间不生成普通比率，并降低窗口置信度。
+
+初值为 `L = 500ms × 权重 × min(1, 判失压力 / 5%)`。5% 是归一化参考，不是判死线；持续 loss 可推动性能切换，单次尖峰恢复后不能继续累计持续劣化票。协议栈负责重发与拥塞控制；Champion 只改变后续新流的选择。
+
+质量日志以 `champion quality` 开头，包含 `mode`、`reason`、旧/新分数、P/D/F/L 成本、`probe_ms`、`transport_rtt_ms`、`sender=client`、发送/判失计数、修正标记、更新时间、胜场与冷却。缺失时延打印 `unknown`。切换理由包括 `quality_failover`、`quality_promoted`、`preferred_near`；`shadow` 中的新 tag 是建议结果。评分不依赖日志级别，正常稳态不会逐请求重复打印质量决定。
+
+这些阈值是工程初值。自动测试覆盖确定性状态回放与真实本机 H3 往返，尚未进行广域网丢包注入、双端 loss 回传或生产校准。详细验证结果记录在 `tasks/todo.md`。
+
+## 旧模式参考（qualityMode=off）
+
 本文档基于当前仓库实现整理，适用于需要查询以下问题的场景：
 
 - Champion 是什么，和 `roundrobin`、`leastping` 的行为差异是什么。

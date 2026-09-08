@@ -2,6 +2,7 @@ package internet
 
 import (
 	"github.com/xtls/xray-core/common/net"
+	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/transport/internet/finalmask"
 )
 
@@ -17,6 +18,7 @@ type MemoryStreamConfig struct {
 	QuicParams       *QuicParams
 	SocketSettings   *SocketConfig
 	DownloadSettings *MemoryStreamConfig
+	OutboundQuality  extension.OutboundQualityReporter
 }
 
 // ToMemoryStreamConfig converts a StreamConfig to MemoryStreamConfig. It returns a default non-nil MemoryStreamConfig for nil input.

@@ -2,6 +2,7 @@ package observatory
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -33,6 +34,7 @@ type Observer struct {
 	status     []*OutboundStatus
 	overlay    *runtimeFeedbackOverlay
 	monitored  map[string]struct{}
+	quality    *QualityStore
 
 	finished *done.Instance
 
@@ -62,7 +64,28 @@ func (o *Observer) Type() interface{} {
 	return extension.ObservatoryType()
 }
 
+func (o *Observer) EnableOutboundQuality() {
+	if o.quality != nil {
+		o.quality.Enable()
+	}
+}
+func (o *Observer) NewOutboundQualityReporter(tag string) extension.OutboundQualityReporter {
+	if o.quality == nil {
+		return nil
+	}
+	return o.quality.Reporter(tag)
+}
+func (o *Observer) GetOutboundQuality() extension.OutboundQualitySnapshot {
+	if o.quality == nil {
+		return extension.OutboundQualitySnapshot{}
+	}
+	return o.quality.Snapshot()
+}
+
 func (o *Observer) Start() error {
+	if o.quality != nil {
+		o.quality.Start()
+	}
 	if o.config != nil && len(o.config.SubjectSelector) != 0 {
 		o.finished = done.New()
 		go o.background()
@@ -71,6 +94,9 @@ func (o *Observer) Start() error {
 }
 
 func (o *Observer) Close() error {
+	if o.quality != nil {
+		o.quality.Close()
+	}
 	if o.finished != nil {
 		return o.finished.Close()
 	}
@@ -135,6 +161,9 @@ func (o *Observer) background() {
 }
 
 func (o *Observer) clearRemovedOutbounds(outbounds []string) {
+	if o.quality != nil {
+		o.quality.Prune(outbounds)
+	}
 	o.statusLock.Lock()
 	defer o.statusLock.Unlock()
 	o.setMonitoredTagsLocked(outbounds)
@@ -188,6 +217,24 @@ func (o *Observer) monitoredTagLocked(tag string) bool {
 
 func (o *Observer) probe(outbound string) ProbeResult {
 	errorCollectorForRequest := newErrorCollector()
+	probeCtx := o.ctx
+	var qualityProbe QualityProbe
+	if o.quality != nil {
+		interval := time.Duration(o.config.ProbeInterval)
+		if interval <= 0 {
+			interval = 10 * time.Second
+		}
+		period := interval + 5*time.Second
+		if !o.config.EnableConcurrency {
+			if tags, ok := o.currentObservedOutbounds(); ok {
+				period *= time.Duration(max(1, len(tags)))
+			}
+		}
+		qualityProbe = o.quality.BeginProbe(outbound, 2*period)
+		if qualityProbe.FreshConnection {
+			probeCtx = extension.FreshQualityProbe(probeCtx)
+		}
+	}
 
 	httpTransport := http.Transport{
 		Proxy: func(*http.Request) (*url.URL, error) {
@@ -201,7 +248,7 @@ func (o *Observer) probe(outbound string) ProbeResult {
 				if err != nil {
 					return errors.New("cannot understand address").Base(err)
 				}
-				trackedCtx := session.TrackedConnectionError(o.ctx, errorCollectorForRequest)
+				trackedCtx := session.TrackedConnectionError(probeCtx, errorCollectorForRequest)
 				conn, err := tagged.Dialer(trackedCtx, o.dispatcher, dest, outbound)
 				if err != nil {
 					return errors.New("cannot dial remote address ", dest).Base(err)
@@ -216,6 +263,7 @@ func (o *Observer) probe(outbound string) ProbeResult {
 		},
 		TLSHandshakeTimeout: time.Second * 5,
 	}
+	defer httpTransport.CloseIdleConnections()
 	httpClient := &http.Client{
 		Transport: &httpTransport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -225,6 +273,7 @@ func (o *Observer) probe(outbound string) ProbeResult {
 		Timeout: time.Second * 5,
 	}
 	var GETTime time.Duration
+	var responseStatus int
 	err := task.Run(o.ctx, func() error {
 		startTime := time.Now()
 		probeURL := "https://www.google.com/generate_204"
@@ -237,6 +286,7 @@ func (o *Observer) probe(outbound string) ProbeResult {
 		if err != nil {
 			return errors.New("outbound failed to relay connection").Base(err)
 		}
+		responseStatus = response.StatusCode
 		if response.Body != nil {
 			response.Body.Close()
 		}
@@ -244,6 +294,15 @@ func (o *Observer) probe(outbound string) ProbeResult {
 		GETTime = endTime.Sub(startTime)
 		return nil
 	})
+	if o.quality != nil {
+		failed, reason := err != nil, ""
+		if err != nil {
+			reason = err.Error()
+		} else if responseStatus < 200 || responseStatus >= 300 {
+			failed, reason = true, fmt.Sprintf("healthcheck returned HTTP %d", responseStatus)
+		}
+		o.quality.RecordProbe(qualityProbe, GETTime, failed, reason)
+	}
 	if err != nil {
 		errorMessage := "the outbound " + outbound + " is dead: GET request failed:" + err.Error() + "with outbound handler report underlying connection failed"
 		errors.LogInfoInner(o.ctx, errorCollectorForRequest.UnderlyingError(), errorMessage)
@@ -332,6 +391,7 @@ func New(ctx context.Context, config *Config) (*Observer, error) {
 		ohm:        outboundManager,
 		dispatcher: dispatcher,
 		overlay:    newRuntimeFeedbackOverlay(),
+		quality:    NewQualityStore(config.SubjectSelector),
 	}, nil
 }
 
