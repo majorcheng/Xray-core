@@ -17,6 +17,7 @@ func (o handlerQualityObserver) EnableOutboundQuality() { o.store.Enable() }
 func (o handlerQualityObserver) NewOutboundQualityReporter(tag string) extension.OutboundQualityReporter {
 	return o.store.Reporter(tag)
 }
+
 func (o handlerQualityObserver) GetOutboundQuality() extension.OutboundQualitySnapshot {
 	return o.store.Snapshot()
 }

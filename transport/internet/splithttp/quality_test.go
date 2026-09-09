@@ -29,11 +29,18 @@ func TestQUICQualityCloseClassification(t *testing.T) {
 		err    error
 		failed bool
 	}{
-		{nil, false}, {context.Canceled, false}, {context.DeadlineExceeded, false}, {net.ErrClosed, false},
-		{&quic.ApplicationError{ErrorCode: 0}, false}, {&quic.ApplicationError{ErrorCode: 0x100}, false},
-		{&quic.ApplicationError{ErrorCode: 0x101}, true}, {&quic.TransportError{ErrorCode: quic.NoError}, false},
-		{&quic.TransportError{ErrorCode: quic.ConnectionRefused}, true}, {&quic.StatelessResetError{}, true},
-		{&quic.IdleTimeoutError{}, true}, {fmt.Errorf("wrapped: %w", &quic.HandshakeTimeoutError{}), true},
+		{nil, false},
+		{context.Canceled, false},
+		{context.DeadlineExceeded, false},
+		{net.ErrClosed, false},
+		{&quic.ApplicationError{ErrorCode: 0}, false},
+		{&quic.ApplicationError{ErrorCode: 0x100}, false},
+		{&quic.ApplicationError{ErrorCode: 0x101}, true},
+		{&quic.TransportError{ErrorCode: quic.NoError}, false},
+		{&quic.TransportError{ErrorCode: quic.ConnectionRefused}, true},
+		{&quic.StatelessResetError{}, true},
+		{&quic.IdleTimeoutError{}, true},
+		{fmt.Errorf("wrapped: %w", &quic.HandshakeTimeoutError{}), true},
 	} {
 		if got := quicQualityFailure(tc.err); got != tc.failed {
 			t.Errorf("%v failed=%v want %v", tc.err, got, tc.failed)
@@ -68,7 +75,7 @@ func TestQUICQualityH3Lifecycle(t *testing.T) {
 	settings := &internet.MemoryStreamConfig{
 		ProtocolName: "splithttp", ProtocolSettings: &Config{Path: "/health"}, SecurityType: "tls",
 		SecuritySettings: &tls.Config{NextProtocol: []string{"h3"}, ServerName: "localhost", PinnedPeerCertSha256: [][]byte{hash[:]}},
-		QuicParams:       &internet.QuicParams{DisableChromeParrot: true, Congestion: "reno", UdpHop: &internet.UdpHop{}}, OutboundQuality: events,
+		QuicParams:       &internet.QuicParams{DisableChromeParrot: true, Congestion: "reno"}, OutboundQuality: events,
 	}
 	dest := v2net.UDPDestination(v2net.LocalHostIP, v2net.Port(listener.Addr().(*net.UDPAddr).Port))
 	client := createHTTPClient(dest, settings).(*DefaultDialerClient)

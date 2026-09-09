@@ -202,6 +202,7 @@ func (s *QualityStore) Start() { s.mu.Lock(); defer s.mu.Unlock(); s.started = t
 
 // ponytail: 启用状态随 observatory 实例生存；若需热关闭采样，再增加消费者计数。
 func (s *QualityStore) Enable() { s.mu.Lock(); defer s.mu.Unlock(); s.enabled = true; s.runLocked() }
+
 func (s *QualityStore) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

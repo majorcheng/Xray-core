@@ -67,9 +67,11 @@ func (c *trackedConn) RemoteAddr() stdnet.Addr { return dummyAddr("remote") }
 func (c *trackedConn) SetDeadline(time.Time) error {
 	return nil
 }
+
 func (c *trackedConn) SetReadDeadline(time.Time) error {
 	return nil
 }
+
 func (c *trackedConn) SetWriteDeadline(time.Time) error {
 	return nil
 }

@@ -220,6 +220,7 @@ func (*championQualityProvider) EnableOutboundQuality() {}
 func (*championQualityProvider) NewOutboundQualityReporter(string) extension.OutboundQualityReporter {
 	return nil
 }
+
 func (p *championQualityProvider) GetOutboundQuality() extension.OutboundQualitySnapshot {
 	p.reads++
 	return p.snapshot

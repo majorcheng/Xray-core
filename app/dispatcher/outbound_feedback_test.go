@@ -13,10 +13,12 @@ type captureObservatory struct {
 	signals []*extension.OutboundSignal
 }
 
-func (c *captureObservatory) Start() error                                          { return nil }
-func (c *captureObservatory) Close() error                                          { return nil }
-func (c *captureObservatory) Type() interface{}                                     { return extension.ObservatoryType() }
+func (c *captureObservatory) Start() error      { return nil }
+func (c *captureObservatory) Close() error      { return nil }
+func (c *captureObservatory) Type() interface{} { return extension.ObservatoryType() }
+
 func (c *captureObservatory) GetObservation(context.Context) (proto.Message, error) { return nil, nil }
+
 func (c *captureObservatory) ReportOutboundSignal(signal *extension.OutboundSignal) {
 	copied := *signal
 	c.signals = append(c.signals, &copied)

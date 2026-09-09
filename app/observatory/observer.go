@@ -69,12 +69,14 @@ func (o *Observer) EnableOutboundQuality() {
 		o.quality.Enable()
 	}
 }
+
 func (o *Observer) NewOutboundQualityReporter(tag string) extension.OutboundQualityReporter {
 	if o.quality == nil {
 		return nil
 	}
 	return o.quality.Reporter(tag)
 }
+
 func (o *Observer) GetOutboundQuality() extension.OutboundQualitySnapshot {
 	if o.quality == nil {
 		return extension.OutboundQualitySnapshot{}
