@@ -447,3 +447,35 @@ Git：当前 `main`、`origin/main` 无跟踪分叉，基线 `1e8e0429cfc943f481
 - 隔离 worktree 定向测试全部通过：Blackhole/配置、Champion/router、observatory/burst、XHTTP、outbound/main/core、Freedom/TUN/common-net、HTTP/SOCKS/reverse/REALITY、TLS，以及相关 race 测试；Hysteria、VLESS outbound、testing scenarios 编译检查通过。
 - 主工作树定向复验与 `git diff --check` 通过。一次合并包级测试触发既有资源依赖失败：`infra/conf::TestGeodataConfig` 缺少 `resources/geoip.dat`，`app/router::TestChinaSites` 缺少 `resources/geosite.dat`；本轮未下载资源，已用不依赖这些文件的定向测试完成验证。
 - 临时同步 worktree `/tmp/xray-core-upstream-sync-20260908-v2698` 与同步分支已保留至本轮最终核验结束，随后清理；未 push、未修改生产配置或 `.codegraph/`。
+
+## 2026-09-09 跟进上游 `52a412d9` / `v26.9.9`
+
+- 目标：将官方 `git@github.com:XTLS/Xray-core.git` `main` 的最新 5 个提交合入当前本地 `main`，保留本地 Champion、observatory、reload、health 响应和其他自用改造。
+- 当前状态：tracked 工作区干净；`main` 与 `origin/main` 同为 `54e6f7d0`，仅保留未跟踪 `.codegraph/`；本地相对官方上游独有 34 个提交，上游独有 5 个提交。
+- 上游目标：`52a412d9e2f5c2a5142b1b4e2ab3771dacb8b120`（`Xray-core v26.9.9`）；共同基线为 `37ceb8b4b65ee919fb772a8034e572f76a6e87a2`（`Xray-core v26.9.8`）。
+- 上游新增内容：`udpHop` 独立为新的 `finalmask/udphop`（含配置与连接实现），Freedom 在 `sockopt.dialerProxy` 下跳过域名解析和 `finalRules`，修复 VLESS 安全校验，重构 `infra/vformat` 并更新 Go 格式化依赖，版本号升至 `26.9.9`。
+- 上游变更范围：41 个文件；双方共同修改 `infra/conf/transport_method.go` 与 `transport/internet/splithttp/dialer.go`。
+- 合流预判：`git merge-tree --write-tree HEAD FETCH_HEAD` 仅预测 `transport/internet/splithttp/dialer.go` 内容冲突；该文件包含本地 Champion 质量探测/连接跟踪逻辑与上游移除旧 Hysteria `udphop` 接入的改动，需要手工保留本地质量逻辑并接纳新 finalmask 路径。
+
+### 待执行
+
+- [x] 用户确认后，在隔离 worktree 创建同步分支并合入上游 `FETCH_HEAD`
+- [x] 解决 `transport/internet/splithttp/dialer.go` 冲突，保留质量探测/连接生命周期逻辑并移除旧 `quicParams.UdpHop` 接入
+- [x] 复核 `infra/conf/transport_method.go` 默认值、QUIC 参数 protobuf 重排、新 `finalmask/udphop` 配置和 Freedom/VLESS 语义
+- [x] 运行 finalmask/udphop、XHTTP、Champion/observatory、Freedom/TUN、配置和生成文件相关定向验证及必要 race 测试
+- [x] 验证通过后将主工作树快进到同步分支，补充本节 Review 小结并清理临时引用
+
+### 授权边界
+
+- 本轮已完成只读核验、官方 fetch、分叉统计、变更范围审阅、`git merge-tree` 冲突预判、实际 merge、冲突解决、代码/生成文件修改、测试和主分支快进；本轮已获授权 push，未修改或提交 `.codegraph/`。
+
+### Review 小结
+
+- 本轮从本地 `54e6f7d0` 合流官方 `XTLS/Xray-core` `52a412d9e2f5c2a5142b1b4e2ab3771dacb8b120`（`Xray-core v26.9.9`），共同基线为 `37ceb8b4`，在隔离分支生成 merge commit `fd6c293ba52f934a768af36d4879622d95d53684`，主工作树随后通过 `git merge --ff-only` 快进到该提交。
+- 上游本轮包含版本号更新到 `26.9.9`、新的 `finalmask/udphop`（配置、protobuf 和连接实现）、Freedom 在 `sockopt.dialerProxy` 下跳过域名解析及 `finalRules`、VLESS 安全校验修复、`infra/vformat` 重构和 Go 格式化依赖更新；同时移除旧 Hysteria `udphop` 实现。
+- 唯一代码冲突为 `transport/internet/splithttp/dialer.go`。解决时采用上游移除旧 `quicParams.UdpHop` 的主体，保留本地 `extension` fresh probe、QUIC 质量开始/失败/连接跟踪、下载连接质量继承和 fresh probe 关闭清理逻辑；本地 XHTTP 默认 `maxConcurrency=8..16`、`hMaxReusableSecs=2400..3200` 继续保留。
+- 新 `finalmask/udphop` 已通过最小配置构建检查，JSON `mode=intervalLocal`、`interval=5-5`、远端端口/IP 正确生成 `udphop.Config`；旧 `splithttp` `internet.UdpHop` 引用已全部清除。
+- 上游新 `infra/vformat` 检查最初命中 8 个本地质量/Champion/HTTP 文件，已使用仓库自带格式化器只格式化这些文件；最终 `go run -mod=readonly ./infra/vformat/main.go -mode check -pwd ./` 通过。
+- 隔离 worktree 定向测试通过：`splithttp`、`finalmask/...`、`infra/conf`、Freedom/TUN、VLESS outbound、vformat、core、crypto、pipe、observatory/burst、router、metrics、outbound、HTTP/SOCKS/reverse、REALITY、TLS；相关 race 测试也通过。
+- 主工作树最终聚焦复验通过：配置、XHTTP、Champion/observatory、HTTP/SOCKS/reverse/REALITY、TLS、Freedom/TUN、场景编译和 vformat 检查均通过。宽泛测试中的 `app/router::TestChinaSites` 仍依赖缺失的 `resources/geosite.dat`；本轮未下载外部 geodata 资源。另一次 TLS 宽泛测试的 `TestECHDial` 依赖外部 ECH 服务并返回 `tls: server rejected ECH`，不作为本轮代码阻断。
+- 临时同步 worktree `/tmp/xray-core-upstream-sync-20260909-v2699` 与同步分支已在最终复验后清理；本轮未修改生产配置，`.codegraph/` 保持未跟踪。
