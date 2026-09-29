@@ -472,10 +472,10 @@ func ClientHandshake(request *protocol.RequestHeader, reader io.Reader, writer i
 	}
 
 	if authResp[0] != socks5Version {
-		return nil, errors.New("unexpected server version: ", authResp[0]).AtWarning()
+		return nil, errors.New("unexpected server version: ", authResp[0])
 	}
 	if authResp[1] != authByte {
-		return nil, errors.New("auth method not supported.").AtWarning()
+		return nil, errors.New("auth method not supported.")
 	}
 
 	if authByte == authPassword {
@@ -537,7 +537,7 @@ func ClientHandshake(request *protocol.RequestHeader, reader io.Reader, writer i
 	}
 
 	if requestResp[0] != socks5Version {
-		return nil, errors.New("unexpected server response version: ", requestResp[0]).AtWarning()
+		return nil, errors.New("unexpected server response version: ", requestResp[0])
 	}
 	resp := requestResp[1]
 	if resp != 0x00 {

@@ -112,7 +112,7 @@ func (rr *RoutingRule) BuildCondition() (Condition, error) {
 	}
 
 	if conds.Len() == 0 {
-		return nil, errors.New("this rule has no effective fields").AtWarning()
+		return nil, errors.New("this rule has no effective fields")
 	}
 
 	return conds, nil
@@ -144,7 +144,7 @@ func (br *BalancingRule) Build(ohm outbound.Manager, dispatcher routing.Dispatch
 			}
 			s, ok := i.(*StrategyChampionConfig)
 			if !ok {
-				return nil, errors.New("not a StrategyChampionConfig").AtError()
+				return nil, errors.New("not a StrategyChampionConfig")
 			}
 			qualityMode, err := ParseChampionQualityMode(s.QualityMode)
 			if err != nil {
@@ -172,7 +172,7 @@ func (br *BalancingRule) Build(ohm outbound.Manager, dispatcher routing.Dispatch
 		}
 		s, ok := i.(*StrategyLeastLoadConfig)
 		if !ok {
-			return nil, errors.New("not a StrategyLeastLoadConfig").AtError()
+			return nil, errors.New("not a StrategyLeastLoadConfig")
 		}
 		leastLoadStrategy := NewLeastLoadStrategy(s)
 		return &Balancer{

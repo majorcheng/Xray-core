@@ -13,6 +13,7 @@ import (
 	"github.com/apernet/quic-go/http3"
 	v2net "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol/tls/cert"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/transport/internet"
 	"github.com/xtls/xray-core/transport/internet/tls"
@@ -72,11 +73,23 @@ func TestQUICQualityH3Lifecycle(t *testing.T) {
 	go func() { served <- server.ServeListener(listener) }()
 	t.Cleanup(func() { server.Close(); <-served })
 	events := make(quicQualityEvents, 16)
-	settings := &internet.MemoryStreamConfig{
-		ProtocolName: "splithttp", ProtocolSettings: &Config{Path: "/health"}, SecurityType: "tls",
-		SecuritySettings: &tls.Config{NextProtocol: []string{"h3"}, ServerName: "localhost", PinnedPeerCertSha256: [][]byte{hash[:]}},
-		QuicParams:       &internet.QuicParams{DisableChromeParrot: true, Congestion: "reno"}, OutboundQuality: events,
+	tlsSettings := serial.ToTypedMessage(&tls.Config{NextProtocol: []string{"h3"}, ServerName: "localhost", PinnedPeerCertSha256: [][]byte{hash[:]}})
+	settings, err := internet.ToMemoryStreamConfig(&internet.StreamConfig{
+		ProtocolName: "splithttp",
+		TransportSettings: []*internet.TransportConfig{{
+			ProtocolName: "splithttp", Settings: serial.ToTypedMessage(&Config{Path: "/health"}),
+		}},
+		SecurityType:     tlsSettings.Type,
+		SecuritySettings: []*serial.TypedMessage{tlsSettings},
+		QuicParams:       &internet.QuicParams{DisableChromeParrot: true, Congestion: "reno"},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
+	if settings.FinalMask == nil {
+		t.Fatal("stream settings did not initialize FinalMask")
+	}
+	settings.OutboundQuality = events
 	dest := v2net.UDPDestination(v2net.LocalHostIP, v2net.Port(listener.Addr().(*net.UDPAddr).Port))
 	client := createHTTPClient(dest, settings).(*DefaultDialerClient)
 	t.Cleanup(func() { client.Close() })

@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -37,6 +38,18 @@ import (
 
 type Conn struct {
 	*reality.Conn
+	suppressCloseNotify atomic.Bool
+}
+
+func (c *Conn) SuppressCloseNotify() {
+	c.suppressCloseNotify.Store(true)
+}
+
+func (c *Conn) Close() error {
+	if c.suppressCloseNotify.Load() {
+		return c.Conn.NetConn().Close()
+	}
+	return c.Conn.Close()
 }
 
 var mldsaKeyCache sync.Map
@@ -83,10 +96,22 @@ func Server(c net.Conn, config *reality.Config) (net.Conn, error) {
 
 type UConn struct {
 	*utls.UConn
-	Config     *Config
-	ServerName string
-	AuthKey    []byte
-	Verified   bool
+	Config              *Config
+	ServerName          string
+	AuthKey             []byte
+	Verified            bool
+	suppressCloseNotify atomic.Bool
+}
+
+func (c *UConn) SuppressCloseNotify() {
+	c.suppressCloseNotify.Store(true)
+}
+
+func (c *UConn) Close() error {
+	if c.suppressCloseNotify.Load() {
+		return c.NetConn().Close()
+	}
+	return c.UConn.Close()
 }
 
 func (c *UConn) HandshakeAddress() net.Address {
@@ -160,7 +185,7 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 	uConn.ServerName = utlsConfig.ServerName
 	fingerprint := tls.GetFingerprint(config.Fingerprint)
 	if fingerprint == nil {
-		return nil, errors.New("REALITY: failed to get fingerprint").AtError()
+		return nil, errors.New("REALITY: failed to get fingerprint")
 	}
 	uConn.UConn = utls.UClient(c, utlsConfig, *fingerprint)
 	{
@@ -304,7 +329,7 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 		}()
 		//time.Sleep(time.Duration(crypto.RandBetween(config.SpiderY[8], config.SpiderY[9])) * time.Millisecond) // return
 		time.Sleep(time.Duration(randRange(config.SpiderY[8], config.SpiderY[9])) * time.Millisecond) // return
-		return nil, errors.New("REALITY: processed invalid connection").AtWarning()
+		return nil, errors.New("REALITY: processed invalid connection")
 	}
 	return uConn, nil
 }
