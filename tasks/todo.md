@@ -479,3 +479,53 @@ Git：当前 `main`、`origin/main` 无跟踪分叉，基线 `1e8e0429cfc943f481
 - 隔离 worktree 定向测试通过：`splithttp`、`finalmask/...`、`infra/conf`、Freedom/TUN、VLESS outbound、vformat、core、crypto、pipe、observatory/burst、router、metrics、outbound、HTTP/SOCKS/reverse、REALITY、TLS；相关 race 测试也通过。
 - 主工作树最终聚焦复验通过：配置、XHTTP、Champion/observatory、HTTP/SOCKS/reverse/REALITY、TLS、Freedom/TUN、场景编译和 vformat 检查均通过。宽泛测试中的 `app/router::TestChinaSites` 仍依赖缺失的 `resources/geosite.dat`；本轮未下载外部 geodata 资源。另一次 TLS 宽泛测试的 `TestECHDial` 依赖外部 ECH 服务并返回 `tls: server rejected ECH`，不作为本轮代码阻断。
 - 临时同步 worktree `/tmp/xray-core-upstream-sync-20260909-v2699` 与同步分支已在最终复验后清理；本轮未修改生产配置，`.codegraph/` 保持未跟踪。
+
+## 2026-09-29 跟进上游 `e5e85ca9`
+
+- 目标与授权：继续维护 fork；按本会话已确认的隔离合流、定向验证、主分支快进与普通 push 流程完成交付。保留本地自用功能与 `.codegraph/`，不部署或改写远端历史。
+- 合流前状态：`main` 与刷新后的 `origin/main` 均为 `2b773d8e03436338d81a049a64eff41ffb69daea`，tracked 工作区干净；共同基线 `52a412d9`，双方独有提交为 `36 / 26`。
+- 固定上游目标：`e5e85ca9dada936ae736197ad2b7a685972e8e0f`，抓取时官方 main 最新提交（XTLS Vision CloseNotify 修复）；本轮合入 26 个提交、223 个文件，包含 Finalmask 拨号重构、MASQUE、XDRIVE、SS2022 重写、TUN/WireGuard、日志与 geodata 修复。
+- 影响与冲突：预测 `proxy/socks/protocol.go`、`transport/internet/memory_settings.go`、`transport/internet/reality/reality.go` 三处冲突；共 15 个双方修改文件。重点保留 SOCKS 行为、REALITY 公钥缓存、XHTTP 质量事件及 XMux 默认值，适配上游 FinalMask 和错误 API。
+- 完成标准：上游目标成为 main 祖先；聚焦测试、必要 race 和仓库格式检查通过；提交同步记录、普通 push 并核验远端哈希。
+- 验证范围：冲突路径、本地 Champion/observatory/reload/health、受影响的传输与新协议本地测试；跳过生产设备操作、外部存储 live tests、依赖外部 DNS/ECH 与缺失 geodata 的用例。允许获取上游 go.mod 锁定的验证依赖。
+
+- [x] 刷新两端引用、核对基线与工作区、预判冲突
+- [x] 在隔离 worktree 合流并解决冲突、复核共同修改文件
+- [x] 完成本地补丁及传输定向验证、格式检查，记录扩展检查中的基线缺陷
+- [x] 创建合流提交，主分支快进并更新交付记录
+- [x] 普通推送 origin/main、核验远端并清理临时 worktree/分支
+
+### 交付记录
+
+- 合流提交：`680c8703d84bde2b8c53407acff24f909a64716e`；两个父提交分别为本地 `2b773d8e` 和官方 `e5e85ca9`。代码实际差异为 224 个文件（223 个上游文件加本地 H3 回归测试调整）。提交前 `git diff --cached --check` 通过，`go.mod` / `go.sum` 与官方目标一致。
+- `main` 已通过 `git merge --ff-only` 快进；`git push origin main` 成功将 fork 从 `2b773d8e` 更新到 `680c8703`，随后 `git ls-remote origin refs/heads/main` 核验一致，领先/落后为 `0 / 0`。本记录另作 docs 提交交付，最终分支哈希以该提交后的远端核验为准。
+- 提交前再次查询官方 main，仍为 `e5e85ca9dada936ae736197ad2b7a685972e8e0f`；该目标已成为本地 main 的祖先。临时 worktree `/tmp/xray-core-upstream-sync-20260929-e5e85ca9` 和分支 `sync/upstream-20260929-e5e85ca9` 已清理，`.codegraph/` 保持未跟踪。
+
+### 合流与兼容处理
+
+- 三处文本冲突已解决：SOCKS 保留本地 `io.ReadFull` 握手与账号/响应校验；MemoryStreamConfig 同时引入上游 `cnc` 和本地 `OutboundQuality`；REALITY 保留 ML-DSA 公钥缓存和 `randRange`，接纳上游 CloseNotify 抑制。
+- 适配上游删除错误级别链式 API 的变更，清除本地 Champion 配置和 SOCKS 校验残留的 `.AtError()` / `.AtWarning()`；未恢复旧 API。
+- XHTTP 接入上游 FinalMask 拨号，保留 fresh probe 绕过连接池、QUIC 质量事件、下载连接 reporter 继承及探测连接关闭；现有 H3 生命周期测试改为经过 `ToMemoryStreamConfig -> FinalMask`，验证真实 loopback 握手、HTTP 204、时延和关闭事件。
+- 自用 XMux 默认值保留：`maxConcurrency=8..16`、`maxConnections=0..0`、`hMaxRequestTimes=600..900`、`hMaxReusableSecs=2400..3200`；Champion/observatory/runtime 与 relay feedback、routing/log reload、Blackhole health HTTP 204、TLS `allowInsecure` 均保留。
+- 上游兼容变化：WireGuard 移除 `domainStrategy` 和 `remoteDNS` 的 `local` 特殊模式；FakeDNS 默认 IPv6 池改为 `2001:2::/48`；udpHop protobuf 移除 socket 配置字段并调整 IP/端口字段编号，旧二进制配置应重新生成。此次未检查或修改生产配置。
+
+### 验证记录
+
+环境：Go 1.27.1、Linux amd64；使用 `-mod=readonly` 和 `-count=1`，仅获取上游锁定的依赖。
+
+- 普通测试通过：`go test -mod=readonly -count=1 -timeout=180s ./proxy/socks ./proxy/http ./proxy/blackhole ./transport/internet/reality ./transport/internet/splithttp ./common/errors ./common/log ./app/log`。
+- 传输/协议测试通过：`go test -mod=readonly -count=1 -timeout=180s ./transport/internet/finalmask/... ./transport/internet/hysteria ./proxy/masque ./transport/internet/masque/... ./proxy/shadowsocks_2022 ./proxy/tun ./proxy/wireguard ./common/geodata/strmatcher`。输出 `[no test files]` 的包（包括 WireGuard、udpHop）仅完成编译检查。
+- XDRIVE 本地测试通过：`go test -mod=readonly -count=1 -timeout=180s -skip '^TestLive' ./transport/internet/xdrive`；明确排除外部存储测试。TUN 的 DNS 测试使用命令替身和未启动的本地实例，未修改系统 DNS 或创建 TUN 设备。
+- DNS 本地测试通过：`go test -mod=readonly -count=1 -timeout=60s ./app/dns -run '^TestMayUseSystemResolver$'`、`go test -mod=readonly -count=1 -timeout=60s ./app/dns/fakedns`。
+- 配置测试通过：`go test -mod=readonly -count=1 -timeout=180s ./infra/conf -run 'Test(Blackhole|TLSConfig|SplitHTTP|HeaderCustom|XDrive|Masque|XMC|VLess|HTTPServer|Socket|Socks|Routing|Router|Config_Override|XrayConfig|Tun|WireGuard)'`。
+- 主程序/core/VLESS 编码测试通过：`go test -mod=readonly -count=1 -timeout=180s ./main ./core ./proxy/freedom ./proxy/vless/... ./infra/vformat/...`；无测试文件的包仅编译。TLS 本地证书测试通过：`go test -mod=readonly -count=1 -timeout=180s ./transport/internet/tls -run 'Test(CertificateIssuing|ExpiredCertificate|InsecureCertificates)$'`。
+- 本地质量功能 race 测试通过：`go test -mod=readonly -race -count=1 -timeout=60s ./transport/internet/splithttp -run '^TestQUICQuality'`；同参数运行 `./app/proxyman/outbound -run '^Test(Interfaces|Outbound|RelayAware)'` 通过。`./app/observatory/... ./app/metrics ./app/reverse` 在首次组合 race 检查中各自通过。
+- Champion/router/reload race 测试通过：`go test -mod=readonly -race -count=1 -timeout=180s ./app/router -run 'Test(Champion|BalancingRuleBuildChampion|RouterChampion|ReloadRules|RoundRobinStrategy|RandomStrategy|LeastPingStrategy|LeastLoadStrategy|SimpleRouter|RoutingRule)'`。
+- 场景包编译检查通过：`go test -mod=readonly -run '^$' ./testing/scenarios`（未执行端到端场景）；仓库格式检查通过：`go run -mod=readonly ./infra/vformat/main.go -mode check -pwd ./`。
+
+### 已确认的验证限制
+
+- 扩展 race 检查发现 `Test_ListenXHAndDial_QUIC` 的 TLS 证书刷新 slice 竞争（`tls/config.go:90/253`）及测试自身 `serverClosed` 竞争，`TestTagsCache` 的标签缓存指针与测试停止标记竞争；扩展 router 检查中 `TestSimpleBalancer` 因缺少 Xray context panic。
+- 在合流前主工作树 `2b773d8e` 分别运行 `go test -mod=readonly -race -count=1 -timeout=60s ./transport/internet/splithttp -run '^Test_ListenXHAndDial_QUIC$'`、同参数 `./app/proxyman/outbound -run '^TestTagsCache$'`，以及 `go test -mod=readonly -count=1 -timeout=60s ./app/router -run '^TestSimpleBalancer$'`，三者均复现相同失败。相关实现/测试本轮未改动（TLS config 仅移除错误级别调用），作为原有缺陷保留记录，不宣称包级 race 全绿。
+- 诊断与本地证据：`/tmp/xray-sync-20260929-debug/DEBUG.md`、`/tmp/xray-sync-20260929-baseline-{outbound,router,splithttp}.log`；本轮质量/routing/relay 的聚焦 race 日志为 `/tmp/xray-sync-20260929-{quality-race,router-focused,outbound-focused}.log`。
+- 未运行需要 geodata 资源、外部 ECH/DNS、真实存储或生产设备的测试；未进行 Windows/macOS/FreeBSD 运行验证或生产部署。
