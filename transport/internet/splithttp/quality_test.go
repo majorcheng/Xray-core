@@ -16,6 +16,7 @@ import (
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/features/extension"
 	"github.com/xtls/xray-core/transport/internet"
+	"github.com/xtls/xray-core/transport/internet/finalmask/noise"
 	"github.com/xtls/xray-core/transport/internet/tls"
 )
 
@@ -56,6 +57,16 @@ func (quicQualityEvents) Close()                                                
 func (e quicQualityEvents) ReportTransport(event extension.TransportQualityEvent) { e <- event }
 
 func TestQUICQualityH3Lifecycle(t *testing.T) {
+	t.Run("direct", func(t *testing.T) {
+		testQUICQualityH3Lifecycle(t, nil)
+	})
+	t.Run("finalmask", func(t *testing.T) {
+		testQUICQualityH3Lifecycle(t, []*serial.TypedMessage{serial.ToTypedMessage(&noise.Config{})})
+	})
+}
+
+func testQUICQualityH3Lifecycle(t *testing.T, masks []*serial.TypedMessage) {
+	t.Helper()
 	// 真实 loopback H3 握手/HTTP 往返；不验证广域网丢包或 server 发送端统计。
 	certificate, hash := cert.MustGenerate(nil, cert.CommonName("localhost"))
 	certPEM, keyPEM := certificate.ToPEM()
@@ -82,12 +93,13 @@ func TestQUICQualityH3Lifecycle(t *testing.T) {
 		SecurityType:     tlsSettings.Type,
 		SecuritySettings: []*serial.TypedMessage{tlsSettings},
 		QuicParams:       &internet.QuicParams{DisableChromeParrot: true, Congestion: "reno"},
+		Udpmasks:         masks,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.FinalMask == nil {
-		t.Fatal("stream settings did not initialize FinalMask")
+	if (settings.FinalMask != nil) != (len(masks) != 0) {
+		t.Fatal("FinalMask initialization does not match configured masks")
 	}
 	settings.OutboundQuality = events
 	dest := v2net.UDPDestination(v2net.LocalHostIP, v2net.Port(listener.Addr().(*net.UDPAddr).Port))
