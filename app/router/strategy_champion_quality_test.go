@@ -297,9 +297,11 @@ func TestRouterChampionStatusSnapshot(t *testing.T) {
 	p := &championQualityProvider{snapshot: championQualitySnapshot(time.Unix(1000, 0), 120*time.Millisecond, 80*time.Millisecond)}
 	s.quality = p
 	s.PickOutbound([]string{"a", "b"})
-	r := &Router{balancers: map[string]*Balancer{
+	balancers := map[string]*Balancer{
 		"out_us": {strategy: s, ohm: &championStatusManager{tags: []string{"a", "b"}}},
-	}}
+	}
+	r := &Router{}
+	r.balancers.Store(&balancers)
 	result, ok := r.GetChampionStatus().(map[string]ChampionStatus)
 	if !ok || result["out_us"].Current != "b" || len(result["out_us"].Candidates) != 2 {
 		t.Fatalf("unexpected router champion status: %#v", result)

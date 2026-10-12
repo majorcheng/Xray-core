@@ -3,11 +3,7 @@ package router
 import "testing"
 
 func TestReloadRulesReplaceUpdatesDomainStrategy(t *testing.T) {
-	r := &Router{
-		domainStrategy: Config_IpIfNonMatch,
-		balancers:      map[string]*Balancer{},
-		rules:          []*Rule{},
-	}
+	r := newReloadRulesTestRouter()
 
 	if err := r.ReloadRules(&Config{DomainStrategy: Config_IpOnDemand}, false); err != nil {
 		t.Fatalf("reload rules failed: %v", err)
@@ -18,11 +14,7 @@ func TestReloadRulesReplaceUpdatesDomainStrategy(t *testing.T) {
 }
 
 func TestReloadRulesAppendKeepsCurrentDomainStrategy(t *testing.T) {
-	r := &Router{
-		domainStrategy: Config_IpIfNonMatch,
-		balancers:      map[string]*Balancer{},
-		rules:          []*Rule{},
-	}
+	r := newReloadRulesTestRouter()
 
 	if err := r.ReloadRules(&Config{DomainStrategy: Config_IpOnDemand}, true); err != nil {
 		t.Fatalf("reload rules failed: %v", err)
@@ -30,4 +22,13 @@ func TestReloadRulesAppendKeepsCurrentDomainStrategy(t *testing.T) {
 	if r.domainStrategy != Config_IpIfNonMatch {
 		t.Fatalf("unexpected domain strategy after append reload: got=%v want=%v", r.domainStrategy, Config_IpIfNonMatch)
 	}
+}
+
+func newReloadRulesTestRouter() *Router {
+	balancers := map[string]*Balancer{}
+	rules := []*Rule{}
+	r := &Router{domainStrategy: Config_IpIfNonMatch}
+	r.balancers.Store(&balancers)
+	r.rules.Store(&rules)
+	return r
 }

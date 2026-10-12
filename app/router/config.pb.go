@@ -677,6 +677,7 @@ type Config struct {
 	DomainStrategy Config_DomainStrategy  `protobuf:"varint,1,opt,name=domain_strategy,json=domainStrategy,proto3,enum=xray.app.router.Config_DomainStrategy" json:"domain_strategy,omitempty"`
 	Rule           []*RoutingRule         `protobuf:"bytes,2,rep,name=rule,proto3" json:"rule,omitempty"`
 	BalancingRule  []*BalancingRule       `protobuf:"bytes,3,rep,name=balancing_rule,json=balancingRule,proto3" json:"balancing_rule,omitempty"`
+	Script         string                 `protobuf:"bytes,4,opt,name=script,proto3" json:"script,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -732,81 +733,16 @@ func (x *Config) GetBalancingRule() []*BalancingRule {
 	return nil
 }
 
+func (x *Config) GetScript() string {
+	if x != nil {
+		return x.Script
+	}
+	return ""
+}
+
 var File_app_router_config_proto protoreflect.FileDescriptor
 
-const file_app_router_config_proto_rawDesc = "" +
-	"\n" +
-	"\x17app/router/config.proto\x12\x0fxray.app.router\x1a!common/serial/typed_message.proto\x1a\x15common/net/port.proto\x1a\x18common/net/network.proto\x1a\x1bcommon/geodata/geodat.proto\"\xdc\a\n" +
-	"\vRoutingRule\x12\x12\n" +
-	"\x03tag\x18\x01 \x01(\tH\x00R\x03tag\x12%\n" +
-	"\rbalancing_tag\x18\f \x01(\tH\x00R\fbalancingTag\x12\x19\n" +
-	"\brule_tag\x18\x13 \x01(\tR\aruleTag\x127\n" +
-	"\x06domain\x18\x02 \x03(\v2\x1f.xray.common.geodata.DomainRuleR\x06domain\x12+\n" +
-	"\x02ip\x18\n" +
-	" \x03(\v2\x1b.xray.common.geodata.IPRuleR\x02ip\x126\n" +
-	"\tport_list\x18\x0e \x01(\v2\x19.xray.common.net.PortListR\bportList\x124\n" +
-	"\bnetworks\x18\r \x03(\x0e2\x18.xray.common.net.NetworkR\bnetworks\x128\n" +
-	"\tsource_ip\x18\v \x03(\v2\x1b.xray.common.geodata.IPRuleR\bsourceIp\x12C\n" +
-	"\x10source_port_list\x18\x10 \x01(\v2\x19.xray.common.net.PortListR\x0esourcePortList\x12\x1d\n" +
-	"\n" +
-	"user_email\x18\a \x03(\tR\tuserEmail\x12\x1f\n" +
-	"\vinbound_tag\x18\b \x03(\tR\n" +
-	"inboundTag\x12\x1a\n" +
-	"\bprotocol\x18\t \x03(\tR\bprotocol\x12L\n" +
-	"\n" +
-	"attributes\x18\x0f \x03(\v2,.xray.app.router.RoutingRule.AttributesEntryR\n" +
-	"attributes\x126\n" +
-	"\blocal_ip\x18\x11 \x03(\v2\x1b.xray.common.geodata.IPRuleR\alocalIp\x12A\n" +
-	"\x0flocal_port_list\x18\x12 \x01(\v2\x19.xray.common.net.PortListR\rlocalPortList\x12C\n" +
-	"\x10vless_route_list\x18\x14 \x01(\v2\x19.xray.common.net.PortListR\x0evlessRouteList\x12\x18\n" +
-	"\aprocess\x18\x15 \x03(\tR\aprocess\x128\n" +
-	"\awebhook\x18\x16 \x01(\v2\x1e.xray.app.router.WebhookConfigR\awebhook\x12\x19\n" +
-	"\blocal_os\x18\x17 \x03(\tR\alocalOs\x1a=\n" +
-	"\x0fAttributesEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\f\n" +
-	"\n" +
-	"target_tag\"\xca\x01\n" +
-	"\rWebhookConfig\x12\x10\n" +
-	"\x03url\x18\x01 \x01(\tR\x03url\x12$\n" +
-	"\rdeduplication\x18\x02 \x01(\rR\rdeduplication\x12E\n" +
-	"\aheaders\x18\x03 \x03(\v2+.xray.app.router.WebhookConfig.HeadersEntryR\aheaders\x1a:\n" +
-	"\fHeadersEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdc\x01\n" +
-	"\rBalancingRule\x12\x10\n" +
-	"\x03tag\x18\x01 \x01(\tR\x03tag\x12+\n" +
-	"\x11outbound_selector\x18\x02 \x03(\tR\x10outboundSelector\x12\x1a\n" +
-	"\bstrategy\x18\x03 \x01(\tR\bstrategy\x12M\n" +
-	"\x11strategy_settings\x18\x04 \x01(\v2 .xray.common.serial.TypedMessageR\x10strategySettings\x12!\n" +
-	"\ffallback_tag\x18\x05 \x01(\tR\vfallbackTag\"T\n" +
-	"\x0eStrategyWeight\x12\x16\n" +
-	"\x06regexp\x18\x01 \x01(\bR\x06regexp\x12\x14\n" +
-	"\x05match\x18\x02 \x01(\tR\x05match\x12\x14\n" +
-	"\x05value\x18\x03 \x01(\x02R\x05value\"\xc0\x01\n" +
-	"\x17StrategyLeastLoadConfig\x125\n" +
-	"\x05costs\x18\x02 \x03(\v2\x1f.xray.app.router.StrategyWeightR\x05costs\x12\x1c\n" +
-	"\tbaselines\x18\x03 \x03(\x03R\tbaselines\x12\x1a\n" +
-	"\bexpected\x18\x04 \x01(\x05R\bexpected\x12\x16\n" +
-	"\x06maxRTT\x18\x05 \x01(\x03R\x06maxRTT\x12\x1c\n" +
-	"\ttolerance\x18\x06 \x01(\x02R\ttolerance\"\xd0\x02\n" +
-	"\x16StrategyChampionConfig\x12>\n" +
-	"\x1bcandidate_observation_count\x18\x01 \x01(\x05R\x19candidateObservationCount\x12>\n" +
-	"\x1bpreferred_observation_count\x18\x02 \x01(\x05R\x19preferredObservationCount\x127\n" +
-	"\x18health_ping_jitter_scale\x18\x03 \x01(\x02R\x15healthPingJitterScale\x125\n" +
-	"\x17preferred_max_delay_gap\x18\x04 \x01(\x03R\x14preferredMaxDelayGap\x12#\n" +
-	"\rpreferred_tag\x18\x05 \x01(\tR\fpreferredTag\x12!\n" +
-	"\fquality_mode\x18\x06 \x01(\tR\vqualityMode\"\x96\x02\n" +
-	"\x06Config\x12O\n" +
-	"\x0fdomain_strategy\x18\x01 \x01(\x0e2&.xray.app.router.Config.DomainStrategyR\x0edomainStrategy\x120\n" +
-	"\x04rule\x18\x02 \x03(\v2\x1c.xray.app.router.RoutingRuleR\x04rule\x12E\n" +
-	"\x0ebalancing_rule\x18\x03 \x03(\v2\x1e.xray.app.router.BalancingRuleR\rbalancingRule\"B\n" +
-	"\x0eDomainStrategy\x12\b\n" +
-	"\x04AsIs\x10\x00\x12\x10\n" +
-	"\fIpIfNonMatch\x10\x02\x12\x0e\n" +
-	"\n" +
-	"IpOnDemand\x10\x03\"\x04\b\x01\x10\x01BO\n" +
-	"\x13com.xray.app.routerP\x01Z$github.com/xtls/xray-core/app/router\xaa\x02\x0fXray.App.Routerb\x06proto3"
+const file_app_router_config_proto_rawDesc = "\n\x17app/router/config.proto\x12\x0fxray.app.router\x1a!common/serial/typed_message.proto\x1a\x15common/net/port.proto\x1a\x18common/net/network.proto\x1a\x1bcommon/geodata/geodat.proto\"\xdc\a\n\vRoutingRule\x12\x12\n\x03tag\x18\x01 \x01(\tH\x00R\x03tag\x12%\n\rbalancing_tag\x18\f \x01(\tH\x00R\fbalancingTag\x12\x19\n\brule_tag\x18\x13 \x01(\tR\aruleTag\x127\n\x06domain\x18\x02 \x03(\v2\x1f.xray.common.geodata.DomainRuleR\x06domain\x12+\n\x02ip\x18\n \x03(\v2\x1b.xray.common.geodata.IPRuleR\x02ip\x126\n\tport_list\x18\x0e \x01(\v2\x19.xray.common.net.PortListR\bportList\x124\n\bnetworks\x18\r \x03(\x0e2\x18.xray.common.net.NetworkR\bnetworks\x128\n\tsource_ip\x18\v \x03(\v2\x1b.xray.common.geodata.IPRuleR\bsourceIp\x12C\n\x10source_port_list\x18\x10 \x01(\v2\x19.xray.common.net.PortListR\x0esourcePortList\x12\x1d\n\nuser_email\x18\a \x03(\tR\tuserEmail\x12\x1f\n\vinbound_tag\x18\b \x03(\tR\ninboundTag\x12\x1a\n\bprotocol\x18\t \x03(\tR\bprotocol\x12L\n\nattributes\x18\x0f \x03(\v2,.xray.app.router.RoutingRule.AttributesEntryR\nattributes\x126\n\blocal_ip\x18\x11 \x03(\v2\x1b.xray.common.geodata.IPRuleR\alocalIp\x12A\n\x0flocal_port_list\x18\x12 \x01(\v2\x19.xray.common.net.PortListR\rlocalPortList\x12C\n\x10vless_route_list\x18\x14 \x01(\v2\x19.xray.common.net.PortListR\x0evlessRouteList\x12\x18\n\aprocess\x18\x15 \x03(\tR\aprocess\x128\n\awebhook\x18\x16 \x01(\v2\x1e.xray.app.router.WebhookConfigR\awebhook\x12\x19\n\blocal_os\x18\x17 \x03(\tR\alocalOs\x1a=\n\x0fAttributesEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\f\n\ntarget_tag\"\xca\x01\n\rWebhookConfig\x12\x10\n\x03url\x18\x01 \x01(\tR\x03url\x12$\n\rdeduplication\x18\x02 \x01(\rR\rdeduplication\x12E\n\aheaders\x18\x03 \x03(\v2+.xray.app.router.WebhookConfig.HeadersEntryR\aheaders\x1a:\n\fHeadersEntry\x12\x10\n\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xdc\x01\n\rBalancingRule\x12\x10\n\x03tag\x18\x01 \x01(\tR\x03tag\x12+\n\x11outbound_selector\x18\x02 \x03(\tR\x10outboundSelector\x12\x1a\n\bstrategy\x18\x03 \x01(\tR\bstrategy\x12M\n\x11strategy_settings\x18\x04 \x01(\v2 .xray.common.serial.TypedMessageR\x10strategySettings\x12!\n\ffallback_tag\x18\x05 \x01(\tR\vfallbackTag\"T\n\x0eStrategyWeight\x12\x16\n\x06regexp\x18\x01 \x01(\bR\x06regexp\x12\x14\n\x05match\x18\x02 \x01(\tR\x05match\x12\x14\n\x05value\x18\x03 \x01(\x02R\x05value\"\xc0\x01\n\x17StrategyLeastLoadConfig\x125\n\x05costs\x18\x02 \x03(\v2\x1f.xray.app.router.StrategyWeightR\x05costs\x12\x1c\n\tbaselines\x18\x03 \x03(\x03R\tbaselines\x12\x1a\n\bexpected\x18\x04 \x01(\x05R\bexpected\x12\x16\n\x06maxRTT\x18\x05 \x01(\x03R\x06maxRTT\x12\x1c\n\ttolerance\x18\x06 \x01(\x02R\ttolerance\"\xd0\x02\n\x16StrategyChampionConfig\x12>\n\x1bcandidate_observation_count\x18\x01 \x01(\x05R\x19candidateObservationCount\x12>\n\x1bpreferred_observation_count\x18\x02 \x01(\x05R\x19preferredObservationCount\x127\n\x18health_ping_jitter_scale\x18\x03 \x01(\x02R\x15healthPingJitterScale\x125\n\x17preferred_max_delay_gap\x18\x04 \x01(\x03R\x14preferredMaxDelayGap\x12#\n\rpreferred_tag\x18\x05 \x01(\tR\fpreferredTag\x12!\n\fquality_mode\x18\x06 \x01(\tR\vqualityMode\"\xae\x02\n\x06Config\x12O\n\x0fdomain_strategy\x18\x01 \x01(\x0e2&.xray.app.router.Config.DomainStrategyR\x0edomainStrategy\x120\n\x04rule\x18\x02 \x03(\v2\x1c.xray.app.router.RoutingRuleR\x04rule\x12E\n\x0ebalancing_rule\x18\x03 \x03(\v2\x1e.xray.app.router.BalancingRuleR\rbalancingRule\x12\x16\n\x06script\x18\x04 \x01(\tR\x06script\"B\n\x0eDomainStrategy\x12\b\n\x04AsIs\x10\x00\x12\x10\n\fIpIfNonMatch\x10\x02\x12\x0e\n\nIpOnDemand\x10\x03\"\x04\b\x01\x10\x01BO\n\x13com.xray.app.routerP\x01Z$github.com/xtls/xray-core/app/router\xaa\x02\x0fXray.App.Routerb\x06proto3"
 
 var (
 	file_app_router_config_proto_rawDescOnce sync.Once
