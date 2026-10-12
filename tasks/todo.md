@@ -529,3 +529,45 @@ Git：当前 `main`、`origin/main` 无跟踪分叉，基线 `1e8e0429cfc943f481
 - 在合流前主工作树 `2b773d8e` 分别运行 `go test -mod=readonly -race -count=1 -timeout=60s ./transport/internet/splithttp -run '^Test_ListenXHAndDial_QUIC$'`、同参数 `./app/proxyman/outbound -run '^TestTagsCache$'`，以及 `go test -mod=readonly -count=1 -timeout=60s ./app/router -run '^TestSimpleBalancer$'`，三者均复现相同失败。相关实现/测试本轮未改动（TLS config 仅移除错误级别调用），作为原有缺陷保留记录，不宣称包级 race 全绿。
 - 诊断与本地证据：`/tmp/xray-sync-20260929-debug/DEBUG.md`、`/tmp/xray-sync-20260929-baseline-{outbound,router,splithttp}.log`；本轮质量/routing/relay 的聚焦 race 日志为 `/tmp/xray-sync-20260929-{quality-race,router-focused,outbound-focused}.log`。
 - 未运行需要 geodata 资源、外部 ECH/DNS、真实存储或生产设备的测试；未进行 Windows/macOS/FreeBSD 运行验证或生产部署。
+
+## 2026-10-12 跟进上游 `2bea2df6` / `v26.10.10`
+
+### 合流前证据与范围
+
+- 目标：将官方 `git@github.com:XTLS/Xray-core.git` `main` 的最新提交合入自有 fork，保留本地 Champion、observatory、reload、质量反馈和 TLS 自用语义。
+- 合流前本地 `main` 为 `c8ab38b9ba270fa48e39627a3cc73ce5b297e7ce`，`origin/main` 为 `b5ac640c40fb1435e523c9f92a7e70531c098d7c`；本地相对 `origin/main` 已领先 21 个提交。工作区原有未提交 `infra/conf/vless.go`、`infra/conf/xray.go`、`infra/conf/xray_test.go`、`tasks/todo.md` 和未跟踪 `.codegraph/`，均未纳入本轮合流。
+- 官方目标为 `2bea2df6a1f401a381550466677e53126a1429e3`；共同基线为 `7da5dae6502b787fc6d903863e9a6c5043d107a2`，双方独有提交为 `39 / 18`。上游本轮改动 94 个文件，包含 18 个提交。
+- `git merge-tree --write-tree HEAD FETCH_HEAD` 预判 4 个冲突：`app/router/config.pb.go`、`app/router/router.go`、`infra/conf/router_test.go`、`transport/internet/tls/config.pb.go`。实际在 `/tmp/xray-core-upstream-sync-20261012-2bea2df6` 隔离 worktree、`sync/upstream-20261012-2bea2df6` 分支中合流。
+
+### 待执行
+
+- [x] 核对官方目标、分叉、远端 push 地址、工作区改动和 `.codegraph/` 保留边界
+- [x] 在隔离 worktree 合入上游并解决 Router/TLS 生成文件及测试冲突
+- [x] 复核上游 Lua、轻量 TUN、MASQUE WARP、TLS RootCA 和 Hysteria 变更对本地补丁的影响
+- [x] 完成聚焦普通/race/编译/格式/protobuf 往返验证
+- [x] 主工作树快进、普通推送并核验 `origin/main`
+
+### 合流与兼容处理
+
+- Router 采用上游原子规则/平衡器快照和 Lua 路由脚本；恢复本地 `StrategyChampionConfig`、`GetChampionStatus`，将 `balancing.go` 的查找迁移到原子快照，并保留 replace reload 更新 `domainStrategy` 的语义。
+- `app/router/config.proto` 同时保留本地 Champion 配置并接纳上游 `Config.script=4`；`transport/internet/tls/config.proto` 保留自用 `allow_insecure=1` 并接纳 `use_system_ca=23`。本机没有 `protoc`，生成文件基于现有 protobuf 描述符做最小字段合并，已通过真实 marshal/unmarshal 往返检查。
+- TLS 接纳上游内置 RootCAs 默认路径与 `useSystemCA` 配置，保留 `allowInsecure` 的显式跳过证书校验行为；MASQUE 新增 WARP 配置，DNS/路由新增 Lua 脚本，TUN 从 gVisor 栈迁移到轻量 TCP/IP 栈。
+- 上游依赖同步为 `github.com/yuin/gopher-lua`、`layeh.com/gopher-luar`、`golang.org/x/crypto/x509roots/fallback`，并将 `golang.org/x/net` 升至 `v0.60.0`。
+
+### 验证记录
+
+环境：Go 1.27.2、Linux amd64；使用 `-mod=readonly`、`-count=1`，只获取上游 go.mod 锁定依赖。
+
+- `go test -mod=readonly ./app/router -run 'Test(Champion|RouterChampion|ReloadRules|Lua|Script)' -count=1 -timeout=180s` 通过；同参数 `-race` 通过。
+- `go test -mod=readonly ./infra/conf -run 'Test(Router|TLSConfigAllowInsecure|Masque|Tun)' -count=1 -timeout=180s` 通过；主工作树额外的 `TestOutboundWithoutTransportSecurity` 也通过。
+- `go test -mod=readonly ./app/dns -run 'Test(ReadLua|CallLua|LuaDNS|DNSScriptQuery|DNSScriptRejects|DNSScriptFakeDNS)' -count=1 -timeout=180s`、`./common/lua` 全测通过；`./transport/internet/tls` 的证书/固定证书用例通过。
+- `go test -mod=readonly ./transport/internet/masque/... ./proxy/masque -skip 'Cloudflare'`、`./proxy/tun -run 'Test(TCP|Checksum|Handler)'`、`./transport/internet/hysteria ./app/dispatcher` 均通过。
+- 变更包 `go test -mod=readonly -run '^$'` 编译通过，覆盖 app/dispatcher、app/dns、app/router、common Lua/geodata/log/mux/platform、core、infra/conf、proxy socks/TUN、FinalMask XDNS、Hysteria、MASQUE 和 TLS；`go run -mod=readonly ./infra/vformat/main.go -mode check -pwd ./` 通过。
+- Router/TLS 新旧字段真实 protobuf 往返通过；`git diff --cached --check`、主工作树 `git diff --check` 通过。
+- 合流提交为 `42d3408b514a681163428c1fb7efcaabf1ceeea1`，父提交为本地 `c8ab38b9` 和官方 `2bea2df6`。主工作树已 `git merge --ff-only` 快进；`git push origin main` 成功，`git ls-remote origin refs/heads/main` 与本地一致，领先/落后为 `0/0`。
+
+### 已确认的验证限制
+
+- `app/dns::TestDNSScriptGeoIPFallback` 依赖缺失的 `resources/geoip.dat`；未下载外部 geodata，非 GeoIP Lua 用例已通过。
+- TLS 全包测试中的 `TestECHDial` 依赖外部 `1.1.1.1:53` 和 ECH 服务，本环境出现 DNS 超时/ malformed ECH；本地证书、固定证书与配置用例已通过。
+- 未运行全仓 `go test ./...`、Windows/macOS/FreeBSD 运行验证、真实 MASQUE/WARP 外部服务和生产设备/运行态部署；原有未提交自用限制改动和 `.codegraph/` 保持在工作区。
