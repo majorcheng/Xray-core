@@ -652,3 +652,42 @@ Git：当前 `main`、`origin/main` 无跟踪分叉，基线 `1e8e0429cfc943f481
 - `app/dns::TestDNSScriptGeoIPFallback` 依赖缺失的 `resources/geoip.dat`；未下载外部 geodata，非 GeoIP Lua 用例已通过。
 - TLS 全包测试中的 `TestECHDial` 依赖外部 `1.1.1.1:53` 和 ECH 服务，本环境出现 DNS 超时/ malformed ECH；本地证书、固定证书与配置用例已通过。
 - 未运行全仓 `go test ./...`、Windows/macOS/FreeBSD 运行验证、真实 MASQUE/WARP 外部服务和生产设备/运行态部署；原有未提交自用限制改动和 `.codegraph/` 保持在工作区。
+
+## 2026-10-13 跟进上游 `c77a4d0e`
+
+### 合流前证据与范围
+
+- 目标：把上游官方 `main` 的后续 Lua、base64、MASQUE XMUX 改动合入自有 fork，并完成此前保留在工作区的 VLESS/Trojan 明文出站限制移除及任务记录提交。
+- 合流前代码提交为 `2ac321b5`，任务记录提交为 `e588ef03`；本地相对 `origin/main` 领先 2 个提交，`.codegraph/` 继续保持未跟踪。
+- 官方目标为 `c77a4d0e4932a53f3eeafafdfef877b56fd660ad`，共同基线为 `2bea2df6a1f401a381550466677e53126a1429e3`，双方独有提交为 `41 / 2`；上游本轮变更 43 个文件。
+- `git merge-tree --write-tree HEAD FETCH_HEAD` 预判 `infra/conf/router_test.go` 冲突；实际合流还因本地明文限制删除与上游 MASQUE 条件修改同文件，在 `infra/conf/xray.go` 出现语义冲突。合流在 `/tmp/xray-core-upstream-sync-20261013-c77a4d0e` 隔离 worktree 完成。
+
+### 待执行
+
+- [x] 刷新官方上游和 origin，核对共同基线、分叉与真实冲突路径
+- [x] 先提交此前保留的 VLESS/Trojan 配置改动和任务记录，保持 tracked 工作区完整
+- [x] 合入上游 inline Lua/base64/MASQUE XMUX 改动，解决 Router 测试和 outbound 条件冲突
+- [x] 完成配置、Router、DNS Lua、base64、MASQUE、编译、race 和格式验证
+- [x] 快进主工作树、补充本节记录并准备推送远端
+
+### 合流与兼容处理
+
+- `infra/conf/router.go` 采用上游 inline Lua 脚本语义，脚本与 `domainStrategy`/rules 同时配置时返回冲突错误；保留本地 Champion strategy 分支。
+- `infra/conf/router_test.go` 保留本地 Champion 配置测试，替换旧的文件路径脚本测试为 inline 脚本互斥和空脚本测试。
+- `infra/conf/xray.go` 保留本地删除 `validateOutboundTransportSecurity` 的结果，允许 VLESS/Trojan 公网明文配置；接纳上游 MASQUE XMUX 支持，删除旧的 MASQUE mux 禁止检查并保留 transport/outbound 类型校验。
+- 上游新增 `common/base64` 编解码命令与 `xray base64 encode/decode [-gzip]`，Lua 支持 inline script，MASQUE 客户端默认 `maxConnections=1` 并扩展 XMUX 连接处理；本地 Champion、TLS、observatory/reload 和 `.codegraph/` 边界保持不变。
+
+### 验证记录
+
+环境：Go 1.27.2、Linux amd64；使用 `GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local` 和 `-mod=readonly`。
+
+- `go test -mod=readonly ./infra/conf -run 'Test(Router|OutboundWithoutTransportSecurity|XrayConfig|VLessOutbound|VLessInbound|Masque|TLSConfigAllowInsecure|SocketConfig|SplitHTTPConfigDefaultXmux)' -count=1 -timeout=180s` 通过。
+- `go test -mod=readonly ./app/router -run 'Test(Champion|RouterChampion|ReloadRules|Lua|Script)' -count=1 -timeout=180s` 通过；同范围 `-race` 通过。
+- `go test -mod=readonly ./app/dns -run 'Test(ReadLua|CallLua|LuaDNS|DNSScriptQuery|DNSScriptRejects|DNSScriptFakeDNS)' -count=1 -timeout=180s`、`./common/lua`、`./common/base64` 通过。
+- `go test -mod=readonly ./transport/internet/masque/... ./proxy/masque -skip 'Cloudflare'` 通过；变更包编译检查覆盖 app/dns、app/router、base64、Lua、infra/conf、MASQUE、SplitHTTP 通过。
+- `go run -mod=readonly ./infra/vformat/main.go -mode check -pwd ./`、`git diff --cached --check` 通过；合流提交为 `2a3e29b5`，父提交为本地 `e588ef03` 和官方 `c77a4d0e`。
+
+### 已确认的验证限制
+
+- `app/dns::TestDNSScriptGeoIPFallback` 仍依赖缺失的 `resources/geoip.dat`；非 GeoIP Lua 用例已通过，未下载外部 geodata。
+- 未运行全仓 `go test ./...`、外部 ECH/WARP 服务、真实 TUN/生产设备和跨平台运行验证。
