@@ -2,6 +2,7 @@ package conf_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -155,6 +156,42 @@ func TestXrayConfig(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestOutboundWithoutTransportSecurity(t *testing.T) {
+	for _, tc := range []struct {
+		protocol string
+		format   string
+		settings string
+	}{
+		{"vless", "flat", `{"address":%q,"port":80,"id":"27848739-7e62-4138-9fd3-098a63964b6b","encryption":"none"}`},
+		{"vless", "vnext", `{"vnext":[{"address":%q,"port":80,"users":[{"id":"27848739-7e62-4138-9fd3-098a63964b6b","encryption":"none"}]}]}`},
+		{"trojan", "flat", `{"address":%q,"port":80,"password":"test-password"}`},
+		{"trojan", "servers", `{"servers":[{"address":%q,"port":80,"password":"test-password"}]}`},
+	} {
+		for _, address := range []string{"1.1.1.1", "2606:4700:4700::1111", "example.com", "192.168.1.1"} {
+			for _, security := range []string{"default", "none"} {
+				t.Run(tc.protocol+"/"+tc.format+"/"+address+"/"+security, func(t *testing.T) {
+					settings := json.RawMessage(fmt.Sprintf(tc.settings, address))
+					config := &OutboundDetourConfig{Protocol: tc.protocol, Settings: &settings}
+					if security == "none" {
+						config.StreamSetting = &StreamConfig{Security: "none"}
+					}
+					built, err := config.Build()
+					if err != nil {
+						t.Fatal(err)
+					}
+					sender, err := built.SenderSettings.GetInstance()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := sender.(*proxyman.SenderConfig).GetStreamSettings().GetSecurityType(); got != "" {
+						t.Fatalf("unexpected transport security: %q", got)
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestSniffingConfig_Build(t *testing.T) {
