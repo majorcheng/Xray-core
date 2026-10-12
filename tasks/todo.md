@@ -1,5 +1,86 @@
 # 任务清单
 
+## 2026-10-06 跟进上游 `7da5dae6`
+
+- 目标：合入官方 `XTLS/Xray-core` 最新 `main`，保留本地 Champion、质量观测、reload、Blackhole health、TLS 和 XMux 定制。
+- 基线：本地 `main` 与远端 `origin/main` 均为 `b5ac640c40fb1435e523c9f92a7e70531c098d7c`；共同上游基线为 `e5e85ca9`，双方独有提交为 `38 / 20`。
+- 固定目标：`7da5dae6502b787fc6d903863e9a6c5043d107a2`；上游新增 20 个提交、98 个文件，`git merge-tree --write-tree HEAD FETCH_HEAD` 无冲突。
+- 影响文件：上游变更涉及 XDNS/FinalMask、Noise、SS2022、TUN、WireGuard、geodata、Mux、QUIC、gRPC、HTTPUpgrade 和 API；与本地已提交定制共同修改的文件仅为 `transport/internet/memory_settings.go`、`transport/internet/splithttp/dialer.go`。
+- 工作区保护：原有 `infra/conf/vless.go`、`infra/conf/xray.go`、`infra/conf/xray_test.go`、`tasks/todo.md` 保持未提交；`.codegraph/` 保持原状。隔离验证时复制三个配置文件的补丁，不将其纳入上游合并提交。
+- 完成标准：上游目标成为本地 `main` 祖先；相关聚焦测试、必要 race 和格式检查通过；原有配置改动完整保留并通过测试。本轮未获得推送授权，交付本地同步结果。
+- 验证范围：使用已有本地依赖，检查上游受影响模块、本地质量/路由/健康检查功能和明文出站配置；排除外部 ECH/DNS、真实 TUN/WFP 设备、存储 live tests 和依赖 geodata 下载的测试。仅对必要路径做编译检查，不运行全仓场景回归或部署。
+- 证据目录：`/tmp/xray-sync-20261006-7da5dae6-hdgrqrjh`，包含原始补丁、文件哈希和测试日志。
+
+- [x] 核验官方目标、工作区与远端，预判冲突并备份现有改动
+- [x] 在隔离 worktree 合流并复核本地定制的兼容性
+- [x] 完成受影响模块和本地功能的聚焦验证，记录兼容变化与限制
+- [x] 创建合并提交，快进本地 main，核验原有改动并清理临时 worktree
+
+### 交付结果
+
+- 合并提交：`c8ab38b9ba270fa48e39627a3cc73ce5b297e7ce`，父提交为本地 `b5ac640c` 和官方 `7da5dae6`；本地 `main` 已通过 `git merge --ff-only` 快进，上游目标已验证为祖先。
+- 完成前重新核验官方 `main` 仍为 `7da5dae6502b787fc6d903863e9a6c5043d107a2`；远端 `origin/main` 仍为 `b5ac640c`，本地领先 21 个提交（20 个上游提交和 1 个合并提交），本轮未推送。
+- 快进后逐文件核验：除同步记录外，所有 tracked 文件与已测试的隔离 worktree 字节一致；原有三个配置文件的 SHA-256 和完整补丁均未改变，原有 todo 内容完整保留。四个原有修改文件仍未提交，`.codegraph/` 仍未跟踪。
+- 临时 worktree 与同步分支已清理，原始备份、测试与验收证据留在上述 `/tmp` 证据目录；验收摘要为 `acceptance.log`。
+
+### 合流与兼容处理
+
+- 隔离目录：`/tmp/xray-core-upstream-sync-20261006-7da5dae6`，分支 `sync/upstream-20261006-7da5dae6`。自动合并无冲突；复核两个共同修改文件，上游 PacketConnWrapper 迁移与本地 OutboundQuality、fresh probe、下载连接 reporter 继承及连接关闭逻辑同时保留。
+- 上游改为仅在配置 TCP/UDP mask 时初始化 FinalMask。本地 H3 测试原先假定它无条件存在：同步前同一用例通过，合并后失败于旧断言。仅适配 `quality_test.go`，复用完整的 H3 握手、HTTP 204、时延、连接统计与关闭事件断言，分别覆盖直连和空 noise mask 路径；不更改生产质量逻辑。
+- 除 98 个上游文件外，仅修改本地 H3 回归测试，共 99 个文件；`go.mod` / `go.sum` 与上游及同步前一致，未下载依赖。
+- 配置兼容变化：XDNS 的 `domains` / `resolvers` 从字符串数组变为对象数组，分别使用 `names` / `addrs` 字段；Linux TUN 的 `autoSystemDNS` 更名为 `autoSystemDnsToGateway`，启用时要求 `gateway`。使用这些配置时需同步迁移；本次未修改运行中配置或部署。
+- 上游还包含 Noise `exp`、SS2022 修复、WireGuard 启动竞争/ICMP/空闲 UDP 内存修复、Windows TUN WFP 防泄漏与禁用 IPv6 支持、geodata 优化、gRPC 重拨上下文修复、Mux 分配/关闭竞争修复、QUIC 嗅探及 HTTPUpgrade 握手头更新。
+
+### 验证记录
+
+环境：Linux amd64、Go 1.27.1；以下 Go 命令均使用 `GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local` 和 `-mod=readonly`，普通及 race 测试使用 `-count=1`。
+
+- 上游受影响模块通过：`go test -mod=readonly -p=4 -count=1 -timeout=180s ./transport/internet/finalmask/... ./proxy/shadowsocks_2022 ./proxy/tun ./proxy/wireguard ./transport/internet/httpupgrade ./transport/internet/grpc/... ./common/mux ./common/protocol/quic ./features/dns/localdns ./proxy/freedom ./proxy/masque ./transport/internet/masque/...`。`[no test files]` 仅代表编译通过；TUN DNS 使用命令替身和未启动实例，不操作真实设备或系统 DNS。
+- 配置回归通过：`go test -mod=readonly -p=4 -count=1 -timeout=180s ./infra/conf -run 'Test(OutboundWithoutTransportSecurity|Blackhole|TLSConfig|SplitHTTP|HeaderCustom|Noise|XMC|Masque|VLess|HTTPServer|Socket|Socks|Routing|Router|Config_Override|XrayConfig|Tun|WireGuard)'`，包含原有未提交的明文出站 32 组合测试。
+- 本地功能通过：`go test -mod=readonly -p=4 -count=1 -timeout=180s ./transport/internet/splithttp ./proxy/blackhole ./transport/internet/reality ./app/log`。
+- geodata 通过：`go test -mod=readonly -p=4 -count=1 -timeout=180s ./common/geodata -run '^Test(CompactDomainMatcher_PreservesCustomRuleIndices|MphDomainMatcher_MatchReturnsDetachedSlice|DecodeSiteUnusualEncodings|LoadSite.*)$'`，以及 `./common/geodata/strmatcher` 全部本地测试。真实 geosite/geoip 文件相关用例未运行。
+- H3 质量 race 通过：`go test -mod=readonly -race -p=4 -count=1 -timeout=120s ./transport/internet/splithttp -run '^TestQUICQuality'`，直连和 FinalMask 两个生命周期子用例均通过。
+- Champion/reload race 通过：`go test -mod=readonly -race -p=4 -count=1 -timeout=180s ./app/router -run 'Test(Champion|BalancingRuleBuildChampion|RouterChampion|ReloadRules|RoundRobinStrategy|RandomStrategy|LeastPingStrategy|LeastLoadStrategy|SimpleRouter|RoutingRule)'`。
+- 运行时反馈 race 通过：`go test -mod=readonly -race -p=4 -count=1 -timeout=120s ./app/observatory/... ./app/metrics ./common/mux ./proxy/wireguard`，以及同参数 `./app/proxyman/outbound -run '^Test(Interfaces|Outbound|RelayAware)'`。
+- DNS 排除逻辑通过：`go test -mod=readonly -count=1 -timeout=60s ./transport/internet -run '^TestSkipDNSServers$'`；主程序/API/场景包仅编译通过：`go test -mod=readonly -p=4 -run '^$' ./main ./main/commands/all/api ./testing/scenarios`。
+- 仓库格式检查通过：`go run -mod=readonly ./infra/vformat/main.go -mode check -pwd ./`；`git diff --cached --check` 通过。
+
+### 已确认的验证限制
+
+- CI protobuf 版本头一致性检查未通过：`app/router/config.pb.go` 标注 `protoc v3.21.12`，其余参照文件为 `v6.33.5`。已对照基线 `b5ac640c`，该文件逐字节未变，属于已有生成器版本不一致；不伪改 generated 文件头。证据：`protobuf-baseline.log`。
+- 本次仅声明上述聚焦 race 通过，未重跑历史记录中的 `Test_ListenXHAndDial_QUIC`、`TestTagsCache` race 或 `TestSimpleBalancer` 已知基线失败；未运行全仓场景、外部 ECH/DNS、真实存储或跨平台设备测试。
+- 同步记录留在原有未提交的 `tasks/todo.md` 中，避免把此前任务的记录和配置改动混入本次合并提交。
+
+## 2026-09-29 移除出站明文连接的地址限制
+
+- [x] 核验工作区、分支及远端，定位 VLESS/Trojan 的共同限制及调用方
+- [x] 用聚焦回归测试复现公网地址被拒绝的行为
+- [x] 删除按公网/私网地址强制加密的校验，保持配置和协议必要校验
+- [x] 检查其他类似限制，记录真实拦截、弃用提示和协议约束
+- [x] 运行受影响配置路径的本地测试并审阅最终差异
+
+影响文件：`infra/conf/xray.go`、`infra/conf/vless.go`、`infra/conf/xray_test.go`、`tasks/todo.md`。
+
+完成标准：VLESS `encryption: "none"` 和无 TLS 的 Trojan 出站可使用公网 IP/域名；新旧 VLESS 配置格式均有回归覆盖；报告其他限制的用途与状态。
+
+验证范围：新增用例先验证旧代码失败，再运行 `infra/conf` 中出入站构建、VLESS、Trojan、传输配置及既有 `allowInsecure` 的聚焦测试；执行格式检查和 `git diff --check`。仅使用已有本地依赖，不访问生产服务。
+
+### 实施与验证结果
+
+- 删除 `requiresTransportSecurity`、`validateOutboundTransportSecurity` 及唯一调用入口，同时删除旧 VLESS 配置专为该校验回填 `Address` / `Encryption` 的代码；生产代码共删除 41 行，无新增配置开关。
+- 新增 `TestOutboundWithoutTransportSecurity`：覆盖 VLESS/Trojan 各两种配置格式、公网 IPv4/IPv6/域名及私网 IPv4、省略传输配置或显式 `security: "none"`，共 32 个组合；同时断言未自动启用传输加密。
+- 修改前执行新增测试，24 个公网组合均因目标报错失败；修改后 32 个组合全部通过。
+- 验证命令：`GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local timeout 180s go test -mod=readonly ./infra/conf -run '^(TestOutboundWithoutTransportSecurity|TestXrayConfig|TestVLessOutbound|TestVLessInbound|TestMuxConfig_Build|TestTLSConfigAllowInsecure|TestSocketConfig|TestSplitHTTPConfigDefaultXmux)$' -count=1`，结果 `ok`；已对修改的 Go 文件执行 `gofmt`，`git diff --check` 通过。
+- 本轮仅修改本地源码和测试；未提交、推送、构建发布二进制或部署。
+
+### 其他限制检查
+
+- `allowInsecure`：本分支已保留配置和运行时语义，既有回归测试通过。
+- UDP/443：Mux 默认 `xudpProxyUDP443: "reject"`，可配置为 `"allow"` 或 `"skip"`；Vision 默认拒绝 UDP/443，可使用 `xtls-rprx-vision-udp443`。本轮保留这些已有的可配置策略。
+- 弃用提示：VMess、Trojan、Shadowsocks、WebSocket、gRPC、HTTPUpgrade 仍会输出 warning，但这些提示不会阻止启动；REALITY 非 443 监听也仅输出 warning。
+- 旧配置入口：`legacy reverse`、出站 `proxySettings`、全局 `transport` 仍会返回错误；其中旧 reverse 的构建代码和 `app/reverse` 仍存在。另有旧 HTTP/QUIC transport、Legacy XTLS、Trojan Flow 入口拒绝；恢复这些功能涉及独立兼容范围，本轮仅记录。
+- 实现约束：Vision TCP 路径依赖 TLS/REALITY 或 VLESS Encryption 的连接结构；REALITY 仅支持 RAW/XHTTP/gRPC；当前 MASQUE 实现要求 TLS。保留这些约束；纯明文 VLESS 使用空 `flow` 和 `encryption: "none"`。
+
 ## 2026-07-28 跟进上游 `5ca6f4b7` / `v26.7.28`
 
 ### 实施状态
