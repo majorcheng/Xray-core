@@ -35,7 +35,8 @@
 - [x] 在隔离 worktree 合流并保留本地补丁语义
 - [x] 完成受影响模块、本地功能和 race 聚焦验证
 - [x] 创建中文合并提交并补充本同步记录
-- [ ] 主工作树快进到已验证提交并推送 `origin/main`，核验远端哈希与最终工作区
+- [x] 主工作树快进到已验证提交并推送 `origin/main`，核验远端哈希与最终工作区
+- 推送结果：`origin/main` 已更新到 `5d0d3ee95c4d2dbda024f11b7da0f061c88d27af`；推送后 `git rev-list --left-right --count HEAD...origin/main` 为 `0 0`。
 
 ## 2026-10-06 跟进上游 `7da5dae6`
 
