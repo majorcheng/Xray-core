@@ -1,5 +1,42 @@
 # 任务清单
 
+## 2026-10-18 跟进上游 `92ccc939`
+
+- 目标：将官方 `XTLS/Xray-core` `main` 同步到 `92ccc939aaf4f8965f369cf0b142e005aeaa11d5`（`v26.10.17`），维护自用 fork 的本地补丁语义，并把已验证结果发布到 `origin/main`。
+- 基线：本地 `main` 与 `origin/main` 均为 `7e48be8580cfd59c8eac1dd63c0551a96bbb83a8`；共同基线为 `c77a4d0e4932a53f3eeafafdfef877b56fd660ad`；相对共同基线本地独有 45 个提交、上游独有 15 个提交。
+- 上游范围：Lua 默认沙箱与特权脚本签名、XDNS DoH、geodata 安全校验与下载、TUN/WireGuard 轻量 TCP/IP 栈、XDRIVE、Sockopt 取消绑定后的拨号、Go 1.27.3 兼容、REALITY/依赖更新，以及 v26.10.17 版本提交。
+- 隔离目录：`/tmp/xray-core-upstream-sync-20261018-92ccc939`；同步分支：`sync/upstream-20261018-92ccc939`；主工作树的未跟踪 `.codegraph/` 未触碰。
+- 冲突预判：`git merge-tree --write-tree HEAD FETCH_HEAD` 只预测 `infra/conf/transport_test.go`、`infra/conf/xray.go`、`main/run.go`、`transport/internet/reality/reality.go` 四个文本冲突。
+
+### 合流与兼容处理
+
+- 合并提交：`42f04d45`，父提交为本地 `7e48be85` 和官方 `92ccc939`。
+- `infra/conf/xray.go` 接纳上游 XDRIVE 的 VLESS 加密、Mux、Flow、Testpre 和监听端口校验；删除上游重新带回的 `validateOutboundTransportSecurity` 及公网地址明文限制，继续保持本 fork 允许公网 VLESS `encryption: "none"`、无 TLS Trojan 的自用语义。
+- `infra/conf/transport_test.go` 合并上游 XDRIVE 回归覆盖与本地 TLS `allowInsecure`、SplitHTTP XMux 默认值测试；`main/run.go` 同时保留本地 `pidfile` 入口和上游 Lua 特权签名恢复提示。
+- `transport/internet/reality/reality.go` 接纳上游标准库 `crypto/mldsa`、`crypto/hkdf`、ECDH 错误处理和 Go 1.27 兼容改动，同时把本地 ML-DSA 公钥缓存与 `randRange` 迁移到标准库 API；`reality_test.go` 随依赖移除 `circl` 改用 `crypto/mldsa` 生成测试公钥。
+- `go.mod` / `go.sum` 按上游更新 `reality`、`x/crypto`、`x/net`、`x/sync`、brotli、compress、x/text、x/tools 等版本，移除已由标准库替代的 `circl`，保留上游对 gVisor 的间接依赖声明。
+
+### 验证记录
+
+环境：Linux amd64、Go 1.27.2；测试使用 `GOTOOLCHAIN=local`、`-mod=readonly`，新上游模块仅下载到本地 Go 模块缓存。
+
+- `GOPROXY=https://proxy.golang.org,direct GOTOOLCHAIN=local go test -mod=readonly -p=4 -count=1 -timeout=240s ./infra/conf -run 'Test(OutboundWithoutTransportSecurity|XDrive|TLSConfigAllowInsecure|SplitHTTPConfigDefaultXmux|HeaderCustom|VLess|XrayConfig|Mux|Socket|SplitHTTP|Masque|Tun|WireGuard)'`：通过。
+- `... go test ... ./transport/internet/reality ./main ./core ./proxy/masque ./transport/internet/xdrive`：通过。
+- `... go test ... ./common/lua`、`./proxy/tun ./proxy/wireguard`、`./transport/internet/finalmask/noise ./transport/internet/finalmask/xdns`、`./proxy/shadowsocks_2022 ./app/observatory/burst`、`./app/geodata -run 'Test(Load|Download|Geo|Mph|Compact|Decode)'`、`./transport/internet -run '^TestSkipDNSServers$'`：均通过。
+- 本地补丁 race：`./app/router -run 'Test(Champion|BalancingRuleBuildChampion|RouterChampion|ReloadRules|RoundRobinStrategy|RandomStrategy|LeastPingStrategy|LeastLoadStrategy|SimpleRouter|RoutingRule)'`、`./app/observatory/... ./app/metrics ./common/mux ./proxy/wireguard`、`./app/proxyman/outbound -run '^Test(Interfaces|Outbound|RelayAware)'`、`./transport/internet/splithttp -run '^TestQUICQuality'`：均通过。
+- `go run -mod=readonly ./infra/vformat/main.go -mode check -pwd ./`、`git diff --cached --check` 和 `git diff --check`：通过。
+
+### 已确认的验证限制
+
+- 首轮无 `-run` 的 `./infra/conf` 全包测试在既有 `TestGeodataConfig` 处因缺少 `../../resources/geoip.dat` panic；未下载资源文件，也未把这个环境依赖失败误报为同步回归。聚焦配置回归已通过。
+- 本轮未运行全仓 `go test ./...`、真实 geodata 文件加载、外部 ECH/DNS、真实 TUN/WFP 设备、存储 live tests 或生产部署验证。
+
+- [x] 核验官方目标、工作区、fork 远端、分歧和冲突范围
+- [x] 在隔离 worktree 合流并保留本地补丁语义
+- [x] 完成受影响模块、本地功能和 race 聚焦验证
+- [x] 创建中文合并提交并补充本同步记录
+- [ ] 主工作树快进到已验证提交并推送 `origin/main`，核验远端哈希与最终工作区
+
 ## 2026-10-06 跟进上游 `7da5dae6`
 
 - 目标：合入官方 `XTLS/Xray-core` 最新 `main`，保留本地 Champion、质量观测、reload、Blackhole health、TLS 和 XMux 定制。
