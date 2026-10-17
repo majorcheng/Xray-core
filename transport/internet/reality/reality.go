@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	"crypto/hkdf"
 	"crypto/hmac"
+	"crypto/mldsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	gotls "crypto/tls"
@@ -23,7 +25,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	utls "github.com/refraction-networking/utls"
 	"github.com/xtls/reality"
 	"github.com/xtls/xray-core/common/crypto"
@@ -32,7 +33,6 @@ import (
 	"github.com/xtls/xray-core/common/utils"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/transport/internet/tls"
-	"golang.org/x/crypto/hkdf"
 	"golang.org/x/net/http2"
 )
 
@@ -55,23 +55,19 @@ func (c *Conn) Close() error {
 var mldsaKeyCache sync.Map
 
 // getCachedMldsaPublicKey 复用已解析的 ML-DSA 公钥，避免握手热路径重复反序列化。
-func getCachedMldsaPublicKey(raw []byte) *mldsa65.PublicKey {
+func getCachedMldsaPublicKey(raw []byte) *mldsa.PublicKey {
 	if len(raw) == 0 {
 		return nil
 	}
 	keyStr := string(raw)
 	if cached, ok := mldsaKeyCache.Load(keyStr); ok {
-		if pubKey, ok := cached.(*mldsa65.PublicKey); ok {
+		if pubKey, ok := cached.(*mldsa.PublicKey); ok {
 			return pubKey
 		}
 	}
 
-	verify, err := mldsa65.Scheme().UnmarshalBinaryPublicKey(raw)
+	pubKey, err := mldsa.NewPublicKey(mldsa.MLDSA65(), raw)
 	if err != nil {
-		return nil
-	}
-	pubKey, ok := verify.(*mldsa65.PublicKey)
-	if !ok {
 		return nil
 	}
 	mldsaKeyCache.Store(keyStr, pubKey)
@@ -142,7 +138,7 @@ func (c *UConn) VerifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x50
 					h.Write(c.HandshakeState.Hello.Raw)
 					h.Write(c.HandshakeState.ServerHello.Raw)
 					if pubKey := getCachedMldsaPublicKey(c.Config.Mldsa65Verify); pubKey != nil {
-						if mldsa65.Verify(pubKey, h.Sum(nil), nil, certs[0].Extensions[0].Value) {
+						if mldsa.Verify(pubKey, h.Sum(nil), certs[0].Extensions[0].Value, nil) == nil {
 							c.Verified = true
 							return nil
 						}
@@ -204,7 +200,7 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 		}
 		publicKey, err := ecdh.X25519().NewPublicKey(config.PublicKey)
 		if err != nil {
-			return nil, errors.New("REALITY: publicKey == nil")
+			return nil, errors.New("REALITY: nil publicKey").Base(err)
 		}
 		ecdhe := uConn.HandshakeState.State13.KeyShareKeys.Ecdhe
 		if ecdhe == nil {
@@ -213,12 +209,11 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
 		if ecdhe == nil {
 			return nil, errors.New("Current fingerprint ", uConn.ClientHelloID.Client, uConn.ClientHelloID.Version, " does not support TLS 1.3, REALITY handshake cannot establish.")
 		}
-		uConn.AuthKey, _ = ecdhe.ECDH(publicKey)
-		if uConn.AuthKey == nil {
-			return nil, errors.New("REALITY: SharedKey == nil")
+		if uConn.AuthKey, err = ecdhe.ECDH(publicKey); err != nil {
+			return nil, errors.New("REALITY: nil sharedKey").Base(err)
 		}
-		if _, err := hkdf.New(sha256.New, uConn.AuthKey, hello.Random[:20], []byte("REALITY")).Read(uConn.AuthKey); err != nil {
-			return nil, err
+		if uConn.AuthKey, err = hkdf.Key(sha256.New, uConn.AuthKey, hello.Random[:20], "REALITY", 32); err != nil {
+			return nil, errors.New("REALITY: nil authKey").Base(err)
 		}
 		aead := crypto.NewAesGcm(uConn.AuthKey)
 		if config.Show {

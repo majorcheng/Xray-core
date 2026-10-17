@@ -1,9 +1,8 @@
 package reality
 
 import (
+	"crypto/mldsa"
 	"testing"
-
-	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 )
 
 const (
@@ -22,14 +21,11 @@ func clearMldsaKeyCache() {
 func TestGetCachedMldsaPublicKeyCachesParsedKey(t *testing.T) {
 	clearMldsaKeyCache()
 
-	pubKey, _, err := mldsa65.GenerateKey(nil)
+	privKey, err := mldsa.GenerateKey(mldsa.MLDSA65())
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
 	}
-	raw, err := pubKey.MarshalBinary()
-	if err != nil {
-		t.Fatalf("MarshalBinary() error = %v", err)
-	}
+	raw := privKey.PublicKey().Bytes()
 
 	first := getCachedMldsaPublicKey(raw)
 	second := getCachedMldsaPublicKey(raw)
