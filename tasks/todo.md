@@ -1,5 +1,43 @@
 # 任务清单
 
+## 2026-11-01 跟进上游 `a4a3dff5` / `v26.10.31`
+
+- 目标：将官方 `XTLS/Xray-core` `main` 同步到 `a4a3dff5b20c2faae567b742c172c7b95e75c083`（`v26.10.31`），保留本地 relay 反馈边界、质量快照缓存、reload 退出码、Champion、observatory、TLS `allowInsecure`、SplitHTTP XMux 默认与公网明文出站语义，并把已验证结果发布到 `origin/main`。
+- 基线：本地 `main` 与 `origin/main` 均为 `5930d08e`；共同基线为 `0afec66085a85191e9dd2a4a6646c7c9a94688d1`；相对共同基线本地独有 53 个提交、上游独有 10 个提交。
+- 上游范围：111 个文件，包含 `protoc-gen-go` 1.36.12 全量 pb.go 再生成、HTTP inbound 短 100 Continue、XHTTP `h2Params`、QUIC ClientHello CRYPTO 间隙校验、geodata 流式 gzip 下载、MPTCP 默认关闭、TUN WFP 端口规则，以及 `v26.10.31` 版本提交。
+- 隔离目录：`/tmp/xray-core-upstream-sync-20261031-a4a3dff5`；同步分支：`sync/upstream-20261031-a4a3dff5`；主工作树的未跟踪 `.codegraph/`、`.pi/` 未提交。
+- 冲突预判：`git merge-tree --write-tree HEAD FETCH_HEAD` 只预测 `proxy/http/server_test.go` 一处文本冲突，实际一致。
+
+### 合流与兼容处理
+
+- 合并提交：`356b4d143d2557079d806e7bc3805801306ab581`，父提交为本地 `5930d08e` 和官方 `a4a3dff5`。
+- `proxy/http/server_test.go` 冲突：保留本地 keep-alive 与 1xx 写错误测试，合入上游短 100 Continue 和 `OneByteReader` 回归；`server.go` 同时保留本地 1xx 写错误处理与上游 `Peek(12)` 修复。
+- `infra/conf/transport_method.go` 自动合并：保留本地 SplitHTTP `maxConcurrency=8..16`、`hMaxReusableSecs=2400..3200` 默认值，同时接纳 XHTTP `h2Params`。
+- 生成文件按本地 proto 校验通过，保留 ReloadRoutingConfig、StrategyChampionConfig 和 `allow_insecure` 字段；`go.mod` 随上游升级 protobuf 1.36.12、protoc-gen-go-grpc 1.6.2。
+- 本地 relay 反馈、质量快照缓存、reload 退出码与 XTLS padding 修复未受上游合流影响。
+
+### 验证记录
+
+环境：Linux amd64、Go 1.27.3；使用 `GOTOOLCHAIN=local`、`-mod=readonly`、`-count=1`。
+
+- `go build -mod=readonly ./...` 通过；`./proxy/http ./common/protocol/tls ./app/geodata ./transport/internet/splithttp ./main` 通过。
+- 补齐本地 `resources/geoip.dat`、`resources/geosite.dat` 后，`./infra/conf` 全包通过；`./app/router` 全包排除 4 个基线既有失败用例后通过；资源已删除，未提交。
+- `./proxy/tun -run 'Test(TCP|UDP|Checksum|Handler|NewStack|Ports|Fragments)'` 通过；`GOOS=windows GOARCH=amd64 go build -mod=readonly ./proxy/tun` 通过。
+- 本地功能聚焦与 race：Champion/router、observatory/burst、dispatcher、proxyman/outbound、SplitHTTP QUIC quality、HTTP CONNECT/1xx 相关用例通过。
+- `infra/vformat -mode check`、`infra/vprotogen -mode check`、`git diff --cached --check` 通过。
+
+### 已确认的验证限制
+
+- `./app/router` 全包仍有基线已存在的 `TestRouterScriptBalancerReload`、`TestRouterScriptConcurrentBalancerReload`、`TestSimpleBalancer` 因测试未注入 Xray context panic，`TestLocalOSRule` 因 `this rule has no effective fields` 失败；本轮未修改。
+- 未运行全仓 `go test ./...`、真实 TUN/WFP 设备、Windows 运行验证、外部 ECH/DNS 或生产部署。
+
+- [x] 刷新上游与 origin，核对分叉、冲突和双方修改交集
+- [x] 在隔离 worktree 合流并解决 HTTP 测试冲突，保留本地补丁
+- [x] 完成上游变更、本地功能和必要的跨平台编译验证
+- [x] 提交合流、快进主工作树并推送 `origin/main`
+- [x] 补充同步记录并核验最终远端状态
+- 推送结果：合流提交 `356b4d14` 已普通推送，`git ls-remote origin refs/heads/main` 与本地一致；本记录提交随后推送并核验。
+
 ## 2026-10-31 跟进上游 `0afec660` / `v26.10.29`
 
 - 目标：将官方 `XTLS/Xray-core` `main` 同步到 `0afec66085a85191e9dd2a4a6646c7c9a94688d1`（`v26.10.29`），保留本地 Champion、observatory、reload、HTTP CONNECT 复用、TLS `allowInsecure`、SplitHTTP XMux 默认与公网明文出站语义，并把已验证结果发布到 `origin/main`。
