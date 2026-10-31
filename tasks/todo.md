@@ -1,5 +1,46 @@
 # 任务清单
 
+## 2026-10-31 跟进上游 `0afec660` / `v26.10.29`
+
+- 目标：将官方 `XTLS/Xray-core` `main` 同步到 `0afec66085a85191e9dd2a4a6646c7c9a94688d1`（`v26.10.29`），保留本地 Champion、observatory、reload、HTTP CONNECT 复用、TLS `allowInsecure`、SplitHTTP XMux 默认与公网明文出站语义，并把已验证结果发布到 `origin/main`。
+- 基线：本地 `main` 与 `origin/main` 均为 `eb99f59a`；共同基线为 `92ccc939aaf4f8965f369cf0b142e005aeaa11d5`；相对共同基线本地独有 50 个提交、上游独有 32 个提交。
+- 上游范围：89 个文件，包含 XDRIVE S3/H3/XMUX、WebSocket 正常关闭、geodata 下载限制与内置私有网段、Finalmask inbound filter、TUN/WireGuard 轻量栈修复、Sockopt 与 Windows/Darwin 修复、DNS 劫持缓冲、adrules 与文件扩展名校验、新的 `infra/vprotogen` 生成工具链，以及 `v26.10.29` 版本提交。
+- 隔离目录：`/tmp/xray-core-upstream-sync-20261029-0afec660`；同步分支：`sync/upstream-20261029-0afec660`；主工作树的未跟踪 `.codegraph/`、`.pi/` 未提交。
+- 冲突预判：`git merge-tree --write-tree HEAD FETCH_HEAD` 预测 `infra/conf/transport_test.go`、`infra/conf/xray.go`、`proxy/http/client.go` 三处文本冲突，实际一致。
+
+### 合流与兼容处理
+
+- 合并提交：`09499e31594aaa1b81fe92f9bb82ef6d7d33d982`，父提交为本地 `eb99f59a` 和官方 `0afec660`。
+- `infra/conf/xray.go` 继续删除 `requiresTransportSecurity` 与 `validateOutboundTransportSecurity`，保留本 fork 允许公网 VLESS `encryption: "none"`、无 TLS Trojan 的自用语义；接纳上游 inbound 模块后置初始化。
+- `infra/conf/transport_test.go` 保留本地 TLS `allowInsecure` 与 SplitHTTP XMux 默认值测试，合入上游 XDRIVE H3/S3/XMux 测试。
+- `proxy/http/client.go` 保留本地池化 `bufio.Reader`、`BufferedConn` 与连接复用；接纳上游 server-first 500ms 首包超时，CONNECT 预读字节继续由 `BufferedConn` 保留，未引入上游独立的 `earlyDataConn` 实现。
+- `infra/conf/transport_method.go` 自动合并：保留本地 SplitHTTP `maxConcurrency=8..16`、`hMaxReusableSecs=2400..3200` 默认值，同时接纳 XDRIVE 的 S3、H3 与 XMux 配置。
+- `transport/internet/tls/config.go` 同时保留本地 `allowInsecure` 语义与上游 master key log `0600` 权限。
+- 使用上游新的 `infra/vprotogen` 工具链（`go tool protoc-gen-go`）重新生成 `app/router/config.pb.go`、`transport/internet/tls/config.pb.go`，保留本地 Champion 与 `allow_insecure` 字段；`-mode check` 通过。
+
+### 验证记录
+
+环境：Linux amd64、Go 1.27.3；使用 `GOTOOLCHAIN=local`、`-mod=readonly`、`-count=1`。
+
+- `go build -mod=readonly ./...` 通过；`go run -mod=readonly ./infra/vformat/main.go -mode check -pwd ./` 与 `git diff --check` 通过。
+- `go test -mod=readonly ./infra/conf`（全包）通过；`./proxy/http ./proxy/socks ./proxy/dns ./proxy/blackhole ./transport/internet/websocket ./transport/internet/finalmask/...` 通过；`./proxy/freedom` 无测试文件，仅编译。
+- `go test -mod=readonly ./transport/internet/xdrive -skip '^TestLive'`、`./proxy/tun -run 'Test(TCP|UDP|Checksum|Handler|NewStack|Ports|Fragments)'`、`./common/platform/...`、`./common/geodata`、`./app/geodata`、`./app/dns`、`./common/lua`、`./transport/internet/reality`、`./transport/internet/tls` 聚焦用例通过。
+- 本地功能聚焦与 race：`./app/router` Champion/Reload/Routing 用例、`./app/observatory/... ./app/metrics ./common/mux ./proxy/wireguard`、`./app/proxyman/outbound`、`./transport/internet/splithttp -run '^TestQUICQuality'` 均通过。
+- 使用 `tasks/lessons.md` 记录的稳定地址补齐本地 `resources/geoip.dat`、`resources/geosite.dat` 后，`./common/geodata` 全包、`./infra/conf` 全包与 `./app/router -run 'Test(ChinaSites|RoutingRule|Process)'` 通过；资源保持未跟踪。
+
+### 已确认的验证限制
+
+- `./app/router` 全包仍有合流前已存在的 `TestRouterScriptBalancerReload`、`TestRouterScriptConcurrentBalancerReload` 与 `TestSimpleBalancer` 因测试未注入 Xray context 在 `ReloadRules -> InjectContext` panic；已在基线 `eb99f59a` 复现，本轮未修改。
+- `TestLocalOSRule` 在基线与合流后均因 `this rule has no effective fields` 失败，属既有测试/环境问题，未在本轮修改。
+- 未运行全仓 `go test ./...`、真实 TUN/WFP 设备、外部 ECH/DNS、XDRIVE live storage、Windows/macOS 运行验证或生产部署。
+
+- [x] 评估上游差异、共同基线、双方修改交集与冲突范围
+- [x] 在隔离 worktree 合流并解决冲突，保留本地补丁语义
+- [x] 完成受影响模块、本地功能和 race 聚焦验证
+- [x] 创建中文合并提交并快进主工作树
+- [x] 推送 `origin/main` 并核验远端哈希与最终工作区
+- 推送结果：`09499e31` 已普通推送，`git ls-remote origin refs/heads/main` 与本地 `HEAD` 一致；本记录提交随后推送。
+
 ## 2026-10-18 跟进上游 `92ccc939`
 
 - 目标：将官方 `XTLS/Xray-core` `main` 同步到 `92ccc939aaf4f8965f369cf0b142e005aeaa11d5`（`v26.10.17`），维护自用 fork 的本地补丁语义，并把已验证结果发布到 `origin/main`。
