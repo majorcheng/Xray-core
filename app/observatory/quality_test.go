@@ -67,6 +67,26 @@ func qualityTestSnapshot(t *testing.T, s *QualityStore) extension.OutboundQualit
 	return values[0]
 }
 
+func TestQualitySnapshotCacheExpiresAtEvidenceDeadline(t *testing.T) {
+	s, now, _ := qualityTestStore(t)
+	s.RecordProbe(s.BeginProbe("line-a", 2*time.Second), 10*time.Millisecond, false, "")
+
+	first := s.Snapshot()
+	if len(first.Outbounds) != 1 || first.Outbounds[0].Probe.Samples != 1 || first.Outbounds[0].State != extension.QualityAvailable {
+		t.Fatalf("unexpected initial snapshot: %+v", first)
+	}
+
+	// 仍在同一 5s epoch 内，但探测已经超过 TTL，缓存不能继续把旧证据当作新鲜的。
+	*now = now.Add(3 * time.Second)
+	second := s.Snapshot()
+	if len(second.Outbounds) != 1 {
+		t.Fatalf("unexpected outbound count: %+v", second)
+	}
+	if second.Outbounds[0].Probe.Samples != 0 || second.Outbounds[0].State != extension.QualityUnknown {
+		t.Fatalf("expired probe remained fresh in same epoch: %+v", second.Outbounds[0])
+	}
+}
+
 func TestQualityProbeFreshnessAndGeneration(t *testing.T) {
 	s, now, reporter := qualityTestStore(t)
 	for i := 0; i < 25; i++ {

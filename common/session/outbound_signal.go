@@ -15,10 +15,10 @@ type TrackedRequestSignalFeedback interface {
 	SubmitOutboundSignal(signal *extension.OutboundSignal)
 }
 
-// TrackedRequestRelayState 记录当前请求是否已经进入真实转发阶段。
+// TrackedRequestRelayState 记录当前请求各 outbound hop 是否已经进入真实转发阶段。
 type TrackedRequestRelayState interface {
-	MarkRelayEstablished() bool
-	RelayEstablished() bool
+	MarkRelayEstablished(tag string) bool
+	RelayEstablished(tag string) bool
 }
 
 // TrackedOutboundSignal 把业务事件 tracker 绑定到当前请求上下文。
@@ -111,19 +111,21 @@ func SubmitOutboundDialSuccessToOriginator(ctx context.Context) {
 // NoteOutboundRelayEstablished 在请求首次进入真实转发时上报成功。
 func NoteOutboundRelayEstablished(ctx context.Context) {
 	state := outboundRelayStateFromContext(ctx)
-	if state == nil {
+	tag := CurrentOutboundTag(ctx)
+	if state == nil || tag == "" {
 		return
 	}
-	if state.MarkRelayEstablished() {
+	if state.MarkRelayEstablished(tag) {
 		SubmitOutboundSignalToOriginator(ctx, &extension.OutboundSignal{Kind: extension.OutboundSignalRelaySuccess})
 	}
 }
 
-// OutboundRelayEstablished 返回当前请求是否已经进入真实转发阶段。
+// OutboundRelayEstablished 返回当前 outbound hop 是否已经进入真实转发阶段。
 func OutboundRelayEstablished(ctx context.Context) bool {
 	state := outboundRelayStateFromContext(ctx)
-	if state == nil {
+	tag := CurrentOutboundTag(ctx)
+	if state == nil || tag == "" {
 		return false
 	}
-	return state.RelayEstablished()
+	return state.RelayEstablished(tag)
 }

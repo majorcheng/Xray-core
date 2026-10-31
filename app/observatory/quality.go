@@ -153,6 +153,7 @@ type QualityStore struct {
 	now                               func() time.Time
 	cached                            extension.OutboundQualitySnapshot
 	cacheDirty                        bool
+	cacheUntil                        time.Time
 }
 
 func NewQualityStore(selectors []string) *QualityStore {
@@ -212,6 +213,7 @@ func (s *QualityStore) Close() {
 		clear(s.states)
 		s.cached = extension.OutboundQualitySnapshot{}
 		s.cacheDirty = true
+		s.cacheUntil = time.Time{}
 	}
 }
 
@@ -250,6 +252,20 @@ func (r *qualityReporter) Close() {
 }
 
 func qualityEpoch(now time.Time) int64 { return now.UnixNano() / int64(extension.QualityInterval) }
+
+func qualityEpochEnd(now time.Time) time.Time {
+	return time.Unix(0, (qualityEpoch(now)+1)*int64(extension.QualityInterval))
+}
+
+func qualityCacheDeadline(now, current, candidate time.Time) time.Time {
+	if candidate.IsZero() || !candidate.After(now) {
+		return current
+	}
+	if candidate.Before(current) {
+		return candidate
+	}
+	return current
+}
 
 func (v *outboundQualityState) bucket(now time.Time) *qualityBucket {
 	if v.buckets == nil {
@@ -444,9 +460,10 @@ func (s *QualityStore) Snapshot() extension.OutboundQualitySnapshot {
 	defer s.mu.Unlock()
 	now := s.now()
 	epoch := qualityEpoch(now)
-	if !s.cacheDirty && s.cached.Epoch == epoch && !s.cached.Time.IsZero() {
+	if !s.cacheDirty && s.cached.Epoch == epoch && now.Before(s.cacheUntil) && !s.cached.Time.IsZero() {
 		return s.cached
 	}
+	cacheUntil := qualityEpochEnd(now)
 	result := extension.OutboundQualitySnapshot{Time: now, Epoch: epoch, Version: s.sequence}
 	for tag, v := range s.states {
 		q := extension.OutboundQuality{Tag: tag, Generation: v.generation, Version: v.version, Updated: v.updated, Reason: v.reason, State: extension.QualityUnknown}
@@ -559,8 +576,23 @@ func (s *QualityStore) Snapshot() extension.OutboundQualitySnapshot {
 				q.State = extension.QualitySuspect
 			}
 		}
+		cacheUntil = qualityCacheDeadline(now, cacheUntil, q.Probe.FreshUntil)
+		cacheUntil = qualityCacheDeadline(now, cacheUntil, q.RTT.FreshUntil)
+		cacheUntil = qualityCacheDeadline(now, cacheUntil, q.Connect.FreshUntil)
+		if !q.Loss.Updated.IsZero() {
+			cacheUntil = qualityCacheDeadline(now, cacheUntil, q.Loss.Updated.Add(time.Minute))
+		}
+		if !q.ConnectionFailureUpdated.IsZero() {
+			cacheUntil = qualityCacheDeadline(now, cacheUntil, q.ConnectionFailureUpdated.Add(time.Minute))
+		}
+		if !v.connectHealth.firstFailure.IsZero() {
+			cacheUntil = qualityCacheDeadline(now, cacheUntil, v.connectHealth.firstFailure.Add(10*time.Second))
+		}
+		if !v.transportHealth.firstFailure.IsZero() {
+			cacheUntil = qualityCacheDeadline(now, cacheUntil, v.transportHealth.firstFailure.Add(10*time.Second))
+		}
 		result.Outbounds = append(result.Outbounds, q)
 	}
-	s.cached, s.cacheDirty = result, false
+	s.cached, s.cacheDirty, s.cacheUntil = result, false, cacheUntil
 	return result
 }

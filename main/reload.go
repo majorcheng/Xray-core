@@ -130,7 +130,7 @@ func executeReload(cmd *base.Command, args []string) {
 	}
 	defer conn.Close()
 
-	results := make([]string, 0, 5)
+	results := make([]reloadResult, 0, 5)
 	if scopes["all"] || scopes["routing"] {
 		results = append(results, reloadRoutingByAPI(ctx, conn, routingConfigFiles, normalizeReloadConfigFormat()))
 	}
@@ -138,14 +138,22 @@ func executeReload(cmd *base.Command, args []string) {
 		results = append(results, reloadLogByAPI(ctx, conn))
 	}
 	if scopes["all"] || scopes["dns"] {
-		results = append(results, "dns: skipped (no DNS API reload service)")
+		results = append(results, reloadResult{message: "dns: skipped (no DNS API reload service)", ok: true})
 	}
 	if scopes["all"] || scopes["observatory"] {
-		results = append(results, "observatory: skipped (no Observatory API reload service)")
+		results = append(results, reloadResult{message: "observatory: skipped (no Observatory API reload service)", ok: true})
 	}
 
-	for _, line := range results {
-		fmt.Println(line)
+	failed := false
+	for _, result := range results {
+		fmt.Println(result.message)
+		if !result.ok {
+			failed = true
+		}
+	}
+	if failed {
+		_ = conn.Close()
+		os.Exit(1)
 	}
 }
 
@@ -503,9 +511,9 @@ func resolveAPIServerAddrFromRawConfig(cfg *iconf.Config) (string, error) {
 	return "", fmt.Errorf("cannot resolve api inbound by tag %q", apiTag)
 }
 
-func reloadRoutingByAPI(ctx context.Context, conn *grpc.ClientConn, configFiles []string, format string) string {
+func reloadRoutingByAPI(ctx context.Context, conn *grpc.ClientConn, configFiles []string, format string) reloadResult {
 	if len(configFiles) == 0 {
-		return "routing: skipped (config unavailable)"
+		return reloadResult{message: "routing: failed (config unavailable)"}
 	}
 	client := routerService.NewRoutingServiceClient(conn)
 	_, err := client.ReloadRoutingConfig(ctx, &routerService.ReloadRoutingConfigRequest{
@@ -515,7 +523,7 @@ func reloadRoutingByAPI(ctx context.Context, conn *grpc.ClientConn, configFiles 
 	if err != nil {
 		return formatAPIResult("routing", err)
 	}
-	return "routing: ok"
+	return reloadResult{message: "routing: ok", ok: true}
 }
 
 func buildRoutingReloadConfigFiles(files cmdarg.Arg) ([]string, error) {
@@ -547,24 +555,29 @@ func normalizeReloadConfigFormat() string {
 	return format
 }
 
-func reloadLogByAPI(ctx context.Context, conn *grpc.ClientConn) string {
+func reloadLogByAPI(ctx context.Context, conn *grpc.ClientConn) reloadResult {
 	client := logService.NewLoggerServiceClient(conn)
 	_, err := client.RestartLogger(ctx, &logService.RestartLoggerRequest{})
 	if err != nil {
 		return formatAPIResult("log", err)
 	}
-	return "log: ok"
+	return reloadResult{message: "log: ok", ok: true}
 }
 
-func formatAPIResult(module string, err error) string {
+type reloadResult struct {
+	message string
+	ok      bool
+}
+
+func formatAPIResult(module string, err error) reloadResult {
 	st, ok := status.FromError(err)
 	if ok {
 		if st.Code() == codes.Unimplemented {
-			return fmt.Sprintf("%s: skipped (service not enabled)", module)
+			return reloadResult{message: fmt.Sprintf("%s: skipped (service not enabled)", module), ok: true}
 		}
-		return fmt.Sprintf("%s: failed (%s)", module, st.Message())
+		return reloadResult{message: fmt.Sprintf("%s: failed (%s)", module, st.Message())}
 	}
-	return fmt.Sprintf("%s: failed (%v)", module, err)
+	return reloadResult{message: fmt.Sprintf("%s: failed (%v)", module, err)}
 }
 
 func listSupportedModules() string {
