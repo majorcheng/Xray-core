@@ -1,12 +1,9 @@
 package router
 
 import (
-	"fmt"
 	"math"
-	"strconv"
 	"time"
 
-	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/features/extension"
 )
 
@@ -22,17 +19,18 @@ type championQualityState struct {
 	lastEvaluation   time.Time
 	lastSwitch       time.Time
 	challenger, kind string
-	// wins 是同类挑战的总票数；challengerWins 与 candidateEvidence 是当前挑战者自己的票数和已计票证据。
-	wins, challengerWins               int
-	started                            time.Time
-	currentEvidence, candidateEvidence time.Time
-	runtimeEvidence                    time.Time
+	// wins 是同类挑战的总票数；challengerWins 与 candidateEvidence 是当前挑战者自己的票数和最近一次探测票所用的证据。
+	wins, challengerWins       int
+	started, candidateEvidence time.Time
+	// currentEvidence 与 runtimeEvidence 是本擂主任期内最近一次探测票、运行时票所用的现任观测时间。
+	// 重新计数时保留、换擂主时清空，现任的每个观测因此最多支撑一票。
+	currentEvidence, runtimeEvidence time.Time
 	// votes 保存同类挑战中每个挑战者的票数与证据；只能在 s.mu 内读写，日志与状态只读上面的字段。
 	votes  map[string]championQualityVote
 	reason string
 }
 
-// championQualityVote 是某个挑战者在本次同类挑战中的票数和最后一次计票所用的证据时间。
+// championQualityVote 是某个挑战者在本次同类挑战中的票数和最近一次探测票所用的证据时间。
 type championQualityVote struct {
 	wins     int
 	evidence time.Time
@@ -42,7 +40,7 @@ type championQualityCandidate struct {
 	quality                                       extension.OutboundQuality
 	known                                         bool
 	rank                                          int
-	score, recentScore                            float64
+	score, recentScore, recentProbeCost           float64
 	probeCost, runtimeCost, failureCost, lossCost float64
 	evidence, runtimeEvidence                     time.Time
 }
@@ -91,9 +89,9 @@ func makeChampionQualityCandidate(q extension.OutboundQuality, now time.Time, se
 	c.evidence = q.Probe.Updated
 	scale := settings.HealthPingJitterScale
 	c.probeCost = qualityMilliseconds(q.Probe.Mean) + scale*qualityMilliseconds(q.Probe.Deviation)
-	recentProbe := qualityMilliseconds(q.Probe.RecentMean) + scale*qualityMilliseconds(q.Probe.RecentDeviation)
+	c.recentProbeCost = qualityMilliseconds(q.Probe.RecentMean) + scale*qualityMilliseconds(q.Probe.RecentDeviation)
 	if q.Probe.RecentMean <= 0 {
-		recentProbe = c.probeCost
+		c.recentProbeCost = c.probeCost
 	}
 	var recentRuntime, recentFailure, recentLoss float64
 	for i, m := range []extension.QualityLatency{q.Connect, q.RTT} {
@@ -160,9 +158,12 @@ func makeChampionQualityCandidate(q extension.OutboundQuality, now time.Time, se
 		c.evidence = c.runtimeEvidence
 	}
 	c.score = c.probeCost + c.runtimeCost + math.Max(c.failureCost, c.lossCost)
-	c.recentScore = recentProbe + recentRuntime + math.Max(recentFailure, recentLoss)
+	c.recentScore = c.recentProbeCost + recentRuntime + math.Max(recentFailure, recentLoss)
 	return c
 }
+
+// qualityImprovementThreshold 是晋级所需的最小改善：max(20ms, 现任分数的 15%)。
+func qualityImprovementThreshold(score float64) float64 { return math.Max(20, score*.15) }
 
 func qualityOrdinaryPromotion(current, candidate championQualityCandidate) bool {
 	if !current.known || !candidate.known {
@@ -174,51 +175,169 @@ func qualityOrdinaryPromotion(current, candidate championQualityCandidate) bool 
 	if candidate.rank > current.rank {
 		return false
 	}
-	threshold := math.Max(20, current.score*.15)
-	return current.score-candidate.score >= threshold && current.recentScore-candidate.recentScore >= math.Max(20, current.recentScore*.15)
+	return current.score-candidate.score >= qualityImprovementThreshold(current.score) &&
+		current.recentScore-candidate.recentScore >= qualityImprovementThreshold(current.recentScore)
+}
+
+// qualityLatestLeads 用现任最新一次探测代替探测分量 P 后，判断挑战者是否仍领先晋级门槛。
+// 探测间隔较长时窗口只有 2–3 个样本，单个慢样本会让 P 在整个有效期内偏高；最新样本恢复后不再计探测票。
+// 最新一次探测失败或挑战者可靠性等级更好时直接支持挑战者。
+func qualityLatestLeads(current, candidate championQualityCandidate) bool {
+	probe := current.quality.Probe
+	if probe.LastFailed || candidate.rank < current.rank {
+		return true
+	}
+	latest := current.score - current.probeCost + qualityMilliseconds(probe.Latest)
+	return latest-candidate.score >= qualityImprovementThreshold(latest)
+}
+
+// qualityRuntimeLed 判断运行时分量 D+max(F,L) 的差距本身（滚动分与最近分）是否达到晋级门槛，或挑战者可靠性等级更好。
+// 现任实际 RTT 只略高于基线时，运行时证据与本次劣势无关，不能按 5s 评估周期计票。
+func qualityRuntimeLed(current, candidate championQualityCandidate) bool {
+	if candidate.rank < current.rank {
+		return true
+	}
+	gap := current.score - current.probeCost - (candidate.score - candidate.probeCost)
+	recentGap := current.recentScore - current.recentProbeCost - (candidate.recentScore - candidate.recentProbeCost)
+	return gap >= qualityImprovementThreshold(current.score) && recentGap >= qualityImprovementThreshold(current.recentScore)
 }
 
 func qualityPreferredNear(preferred, best championQualityCandidate) bool {
 	return preferred.known && best.known && preferred.rank == best.rank && preferred.score-best.score <= math.Max(10, best.score*.05)
 }
 
+// resetDuel 只清空计票；现任证据游标属于擂主任期，由 selectTag 清空。
+// 否则类别变化、优势中断或评估中断后，已经计过票的同一个现任观测会被原样重读再计一票。
 func (q *championQualityState) resetDuel() {
 	q.challenger, q.kind, q.wins, q.challengerWins, q.votes = "", "", 0, 0, nil
-	q.started, q.currentEvidence, q.candidateEvidence, q.runtimeEvidence = time.Time{}, time.Time{}, time.Time{}, time.Time{}
+	q.started, q.candidateEvidence = time.Time{}, time.Time{}
 }
 
+// selectTag 开始新的擂主任期。冷启动等待首选首个结果时会以同一 tag 反复重新选择，
+// 只有擂主、代次或验证状态真正变化才更新切换时间，避免状态接口和日志把重复选择显示为切换并刷新冷却。
 func (q *championQualityState) selectTag(tag string, candidate championQualityCandidate, now time.Time, tentative bool) {
+	if tag != q.current || candidate.quality.Generation != q.generation || tentative != q.tentative {
+		q.lastSwitch = now
+	}
 	q.current, q.generation, q.tentative = tag, candidate.quality.Generation, tentative
-	q.lastSwitch = now
+	q.currentEvidence, q.runtimeEvidence = time.Time{}, time.Time{}
 	q.resetDuel()
 }
 
-// recordWin 只在同类挑战内累计胜场。挑战者轮换时保留总票数，否则两个相近的快节点交替领先时永远无法晋级。
-// 每个挑战者单独记录已计票证据：轮换回来的挑战者不能用旧证据再拿一票；
+// recordWin 只在同类挑战内累计票数，返回本次票型（none、probe、runtime、probe+runtime）与是否晋级。
+// 挑战者轮换时保留总票数，否则两个相近的快节点交替领先时永远无法晋级。每票都要有与本次判断有关的新观测：
+// 探测票要求现任有新探测样本、挑战者有新证据，且挑战者在现任最新一次探测下仍然领先；
+// 运行时票要求现任有新的运行时证据，且运行时分量本身足以让挑战者领先。preferred_near 只计探测票，不比较最新样本。
+// 一票只消耗它实际使用的观测，未用的观测留给后续同类票；现任的观测在整个擂主任期内最多支撑一票。
+// 每个挑战者单独记录已计票证据，轮换回来的挑战者不能用旧证据再拿一票；
 // 晋级目标自身还要有至少一半票，避免只在最后一轮领先的候选兑现其他挑战者的票。
-func (q *championQualityState) recordWin(tag, kind string, current, candidate championQualityCandidate, now time.Time, threshold int) bool {
+func (q *championQualityState) recordWin(tag, kind string, current, candidate championQualityCandidate, now time.Time, threshold int) (string, bool) {
 	if kind != q.kind {
 		q.resetDuel()
 		q.kind, q.started = kind, now
 	}
 	vote := q.votes[tag]
 	q.challenger, q.challengerWins, q.candidateEvidence = tag, vote.wins, vote.evidence
-	paired := current.evidence.After(q.currentEvidence) && candidate.evidence.After(vote.evidence)
-	// 现任有新的运行时劣化证据时，新鲜的备用 healthcheck 即可提供接管资格，不要求候选也有新样本。
-	runtime := kind != "preferred_near" && current.runtimeEvidence.After(q.runtimeEvidence)
-	if q.wins > 0 && !paired && !runtime {
-		return false
+	probeUpdated := current.quality.Probe.Updated
+	probe := probeUpdated.After(q.currentEvidence) && candidate.evidence.After(vote.evidence) &&
+		(kind == "preferred_near" || qualityLatestLeads(current, candidate))
+	runtime := kind != "preferred_near" && current.runtimeEvidence.After(q.runtimeEvidence) && qualityRuntimeLed(current, candidate)
+	if !probe && !runtime {
+		return "none", false
 	}
 	if q.votes == nil {
 		q.votes = make(map[string]championQualityVote)
 	}
-	vote = championQualityVote{wins: vote.wins + 1, evidence: candidate.evidence}
+	vote.wins = min(threshold, vote.wins+1)
+	voteText := "probe+runtime"
+	if probe {
+		vote.evidence, q.currentEvidence = candidate.evidence, probeUpdated
+	} else {
+		voteText = "runtime"
+	}
+	if runtime {
+		q.runtimeEvidence = current.runtimeEvidence
+	} else {
+		voteText = "probe"
+	}
 	q.votes[tag] = vote
 	q.wins = min(threshold, q.wins+1)
 	q.challengerWins, q.candidateEvidence = vote.wins, vote.evidence
-	q.currentEvidence, q.runtimeEvidence = current.evidence, current.runtimeEvidence
-	return q.wins >= threshold && vote.wins >= championOwnVotesRequired(threshold) &&
+	return voteText, q.wins >= threshold && vote.wins >= championOwnVotesRequired(threshold) &&
 		now.Sub(q.started) >= time.Duration(threshold)*extension.QualityInterval && now.Sub(q.lastSwitch) >= championQualityCooldown
+}
+
+// reselect 在没有已验证擂主、擂主故障或代次变化时重新选择，返回决策原因。
+// wait 为真时首选还没有任何探测结果，先按未验证处理，不让先完成探测的其他候选决定首次选择。
+func (q *championQualityState) reselect(tags []string, candidates map[string]championQualityCandidate, best, preferred, oldTag string, failover, wait bool, now time.Time) string {
+	if best != "" && !wait {
+		chosen := best
+		if qualityPreferredNear(candidates[preferred], candidates[best]) {
+			chosen = preferred
+		}
+		q.selectTag(chosen, candidates[chosen], now, false)
+		if failover {
+			return "quality_failover"
+		}
+		return "quality_initial_best"
+	}
+	// 无数据与已确认故障分开处理，绝不把 down 线路因缺样本复活。
+	chosen := ""
+	for _, tag := range tags {
+		status := candidates[tag].quality.State
+		if status == extension.QualityUnavailable || status == extension.QualityRecovering {
+			continue
+		}
+		if chosen == "" || tag == oldTag || chosen != oldTag && tag == preferred {
+			chosen = tag
+		}
+	}
+	q.selectTag(chosen, candidates[chosen], now, chosen != "")
+	if chosen == "" {
+		return "all_candidates_dead"
+	}
+	return "quality_unverified"
+}
+
+// qualityChallenger 返回本轮挑战者、挑战类型与所需票数：普通晋级优先，首选接近最佳时由首选代替；否则检查首选回切。
+func qualityChallenger(candidates map[string]championQualityCandidate, best, preferred, oldTag string, settings ChampionSettings) (string, string, int) {
+	current := candidates[oldTag]
+	if best != oldTag && qualityOrdinaryPromotion(current, candidates[best]) {
+		if preferred != oldTag && qualityPreferredNear(candidates[preferred], candidates[best]) && qualityOrdinaryPromotion(current, candidates[preferred]) {
+			return preferred, "quality_promoted", settings.CandidateObservationCount
+		}
+		return best, "quality_promoted", settings.CandidateObservationCount
+	}
+	if preferred != oldTag && qualityPreferredNear(candidates[preferred], candidates[best]) {
+		return preferred, "preferred_near", settings.PreferredObservationCount
+	}
+	return "", "", 0
+}
+
+// qualityCandidates 为全部候选计算质量评分，并按可靠性等级与分数选出最佳候选，分数相同时保留现任。
+// pending 表示首选已在观测范围内、未确认故障，但还没有任何探测结果（成功或失败）。
+func qualityCandidates(tags []string, outbounds []extension.OutboundQuality, oldTag, preferred string, now time.Time, settings ChampionSettings) (map[string]championQualityCandidate, string, bool) {
+	observed := make(map[string]extension.OutboundQuality, len(outbounds))
+	for _, q := range outbounds {
+		observed[q.Tag] = q
+	}
+	candidates := make(map[string]championQualityCandidate, len(tags))
+	best := ""
+	for _, tag := range tags {
+		q := observed[tag]
+		q.Tag = tag
+		c := makeChampionQualityCandidate(q, now, settings)
+		candidates[tag] = c
+		if !c.known {
+			continue
+		}
+		b := candidates[best]
+		if best == "" || c.rank < b.rank || c.rank == b.rank && (c.score < b.score || c.score == b.score && tag == oldTag) {
+			best = tag
+		}
+	}
+	p, ok := observed[preferred]
+	return candidates, best, ok && p.Probe.Samples == 0 && p.State != extension.QualityUnavailable && p.State != extension.QualityRecovering
 }
 
 func (s *ChampionStrategy) pickQuality(tags []string, snapshot extension.OutboundQualitySnapshot) string {
@@ -256,89 +375,35 @@ func (s *ChampionStrategy) pickQuality(tags []string, snapshot extension.Outboun
 		s.mu.Unlock()
 		return oldTag
 	}
-	observed := make(map[string]extension.OutboundQuality, len(snapshot.Outbounds))
-	for _, q := range snapshot.Outbounds {
-		observed[q.Tag] = q
-	}
-	candidates := make(map[string]championQualityCandidate, len(tags))
-	for _, tag := range tags {
-		q := observed[tag]
-		q.Tag = tag
-		candidates[tag] = makeChampionQualityCandidate(q, now, settings)
-	}
-	current := candidates[oldTag]
 	preferred := settings.PreferredTag
 	if !hasCurrentCandidate(tags, preferred) {
 		preferred = tags[0]
 	}
-	best := ""
-	for _, tag := range tags {
-		c := candidates[tag]
-		if !c.known {
-			continue
-		}
-		b := candidates[best]
-		if best == "" || c.rank < b.rank || c.rank == b.rank && (c.score < b.score || c.score == b.score && tag == oldTag) {
-			best = tag
-		}
-	}
+	candidates, best, preferredPending := qualityCandidates(tags, snapshot.Outbounds, oldTag, preferred, now, settings)
+	current := candidates[oldTag]
 	if !state.lastEvaluation.IsZero() && now.Sub(state.lastEvaluation) > 2*extension.QualityInterval {
 		state.resetDuel()
 	}
 	state.lastEpoch, state.lastVersion, state.lastEvaluation, state.initialized = snapshot.Epoch, snapshot.Version, now, true
-	reason := "quality_stable"
+	reason, vote := "quality_stable", "none"
 	var decision championQualityState
+	failover := unavailable || oldTag != "" && !exists
 	if oldTag == "" || !exists || unavailable || state.tentative || generationChanged {
-		chosen := best
-		if chosen != "" {
-			if qualityPreferredNear(candidates[preferred], candidates[best]) {
-				chosen = preferred
-			}
-			reason = "quality_initial_best"
-			if unavailable || oldTag != "" && !exists {
-				reason = "quality_failover"
-			}
-			state.selectTag(chosen, candidates[chosen], now, false)
-		} else {
-			// 无数据与已确认故障分开处理，绝不把 down 线路因缺样本复活。
-			for _, tag := range tags {
-				status := candidates[tag].quality.State
-				if status == extension.QualityUnavailable || status == extension.QualityRecovering {
-					continue
-				}
-				if chosen == "" || tag == oldTag || chosen != oldTag && tag == preferred {
-					chosen = tag
-				}
-			}
-			reason = "quality_unverified"
-			if chosen == "" {
-				reason = "all_candidates_dead"
-			}
-			state.selectTag(chosen, candidates[chosen], now, chosen != "")
-		}
+		// 冷启动时首选还没有任何探测结果，继续按未验证使用首选；故障切换与代次变化不等待。
+		reason = state.reselect(tags, candidates, best, preferred, oldTag, failover, preferredPending && !failover && !generationChanged, now)
 	} else if !current.known || best == "" {
 		state.resetDuel()
 		reason = "quality_evidence_missing"
+	} else if challenger, kind, count := qualityChallenger(candidates, best, preferred, oldTag, settings); challenger == "" {
+		state.resetDuel()
 	} else {
-		challenger, kind, count := "", "", settings.CandidateObservationCount
-		if best != oldTag && qualityOrdinaryPromotion(current, candidates[best]) {
-			challenger, kind = best, "quality_promoted"
-			if preferred != oldTag && qualityPreferredNear(candidates[preferred], candidates[best]) && qualityOrdinaryPromotion(current, candidates[preferred]) {
-				challenger = preferred
-			}
-		} else if preferred != oldTag && qualityPreferredNear(candidates[preferred], candidates[best]) {
-			challenger, kind, count = preferred, "preferred_near", settings.PreferredObservationCount
-		}
-		if challenger == "" {
-			state.resetDuel()
-		} else {
-			reason = "quality_observing"
-			promote := state.recordWin(challenger, kind, current, candidates[challenger], now, count)
-			decision = *state
-			if promote {
-				reason = kind
-				state.selectTag(challenger, candidates[challenger], now, false)
-			}
+		reason = "quality_observing"
+		var promote bool
+		vote, promote = state.recordWin(challenger, kind, current, candidates[challenger], now, count)
+		decision = *state
+		if promote {
+			reason = kind
+			state.selectTag(challenger, candidates[challenger], now, false)
 		}
 	}
 	state.reason = reason
@@ -350,96 +415,6 @@ func (s *ChampionStrategy) pickQuality(tags []string, snapshot extension.Outboun
 		s.lastTag = selected
 	}
 	s.mu.Unlock()
-	s.logQualityDecision(settings.QualityMode, reason, oldTag, selected, current, candidates[selected], candidates[decision.challenger], decision)
+	s.logQualityDecision(settings.QualityMode, reason, vote, oldTag, selected, current, candidates[selected], candidates[decision.challenger], decision)
 	return selected
-}
-
-func qualityScoreText(c championQualityCandidate) string {
-	if c.quality.Tag == "" {
-		return "none"
-	}
-	if !c.known {
-		return "unknown"
-	}
-	return fmt.Sprintf("%.2f", c.score)
-}
-
-func qualityComponentsText(c championQualityCandidate) string {
-	if c.quality.Tag == "" {
-		return "none"
-	}
-	if !c.known {
-		return "unknown"
-	}
-	return fmt.Sprintf("[%.2f,%.2f,%.2f,%.2f]", c.probeCost, c.runtimeCost, c.failureCost, c.lossCost)
-}
-
-// qualityCandidateText 对不在候选集的擂主输出 none，避免零值被误读为真实状态。
-func qualityCandidateText(c championQualityCandidate, value any) any {
-	if c.quality.Tag == "" {
-		return "none"
-	}
-	return value
-}
-
-// qualityTimeText 输出不含空格的毫秒级 RFC3339 时间，保证日志可按 key=value 解析。
-func qualityTimeText(t time.Time) string {
-	if t.IsZero() {
-		return "none"
-	}
-	return t.Format("2006-01-02T15:04:05.000Z07:00")
-}
-
-// qualityFailureText 加引号输出最近一次探测失败原因；该原因不会在恢复后清空。
-func qualityFailureText(reason string) string {
-	if reason == "" {
-		return "none"
-	}
-	return strconv.Quote(reason)
-}
-
-func qualityLatencyText(m extension.QualityLatency, now time.Time) string {
-	if !qualityLatencyKnown(m, now) {
-		return "unknown"
-	}
-	return fmt.Sprintf("%.2f", qualityMilliseconds(m.Mean))
-}
-
-func (s *ChampionStrategy) logQualityDecision(mode, reason, oldTag, newTag string, old, next, challenger championQualityCandidate, decision championQualityState) {
-	log := errors.LogDebug
-	if oldTag != newTag {
-		log = errors.LogInfo
-		// 首次选择不是故障切换，只有 select 模式下替换已有擂主才告警。
-		if mode == ChampionQualitySelect && oldTag != "" {
-			log = errors.LogWarning
-		}
-	}
-	now := decision.lastEvaluation
-	count := s.Settings.normalized().CandidateObservationCount
-	if decision.kind == "preferred_near" {
-		count = s.Settings.normalized().PreferredObservationCount
-	}
-	threshold := "unknown"
-	if old.known {
-		threshold = fmt.Sprintf("%.2f", math.Max(20, old.score*.15))
-	}
-	log(s.ctx, "champion quality", " balancer=", championTagForLog(s.BalancerTag), " mode=", mode, " reason=", reason,
-		" old_tag=", championTagForLog(oldTag), " new_tag=", championTagForLog(newTag),
-		" old_score_ms=", qualityScoreText(old), " new_score_ms=", qualityScoreText(next),
-		" state=", qualityCandidateText(next, next.quality.State), " old_state=", qualityCandidateText(old, old.quality.State),
-		" old_last_failure=", qualityCandidateText(old, qualityFailureText(old.quality.Reason)),
-		" reliability_rank=", qualityCandidateText(next, next.rank), " old_reliability_rank=", qualityCandidateText(old, old.rank),
-		" generation=", next.quality.Generation,
-		" probe_ms=", qualityLatencyText(next.quality.Probe, now), " probe_updated=", qualityTimeText(next.quality.Probe.Updated),
-		" probe_fresh_until=", qualityTimeText(next.quality.Probe.FreshUntil),
-		" transport_rtt_ms=", qualityLatencyText(next.quality.RTT, now), " rtt_updated=", qualityTimeText(next.quality.RTT.Updated),
-		" score_components_ms[P,D,F,L]=", qualityComponentsText(next), " old_components_ms[P,D,F,L]=", qualityComponentsText(old),
-		" sender=client", " loss_sent=", next.quality.Loss.Sent,
-		" loss_estimated=", next.quality.Loss.Lost, " loss_corrected=", next.quality.Loss.Corrected,
-		" loss_buckets=", next.quality.Loss.Buckets, " loss_updated=", qualityTimeText(next.quality.Loss.Updated),
-		" challenger=", championTagForLog(decision.challenger), " challenger_score_ms=", qualityScoreText(challenger),
-		" improvement_required_ms=", threshold,
-		" evidence_at=", qualityTimeText(next.evidence), " wins=", decision.wins, " required_wins=", count,
-		" challenger_wins=", decision.challengerWins, " challenger_required_wins=", championOwnVotesRequired(count),
-		" cooldown_remaining=", max(time.Duration(0), championQualityCooldown-now.Sub(decision.lastSwitch)).Round(time.Millisecond))
 }

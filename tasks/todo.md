@@ -837,3 +837,66 @@ Git：当前 `main`、`origin/main` 无跟踪分叉，基线 `1e8e0429cfc943f481
 - 质量模式 `quality_evidence_missing` 会清零挑战，ADR 写的是“短暂无新样本暂停”；超过 10s 未评估即重新累计保持文档既定行为。本轮均未改。
 - `pickQuality`、`championStatus`、`makeChampionQualityCandidate` 既有长度超过 80 行；本轮只在前两者各增加 2 行。
 - 未做实网、长时间运行或生产验证。
+
+## 2026-11-14 Champion 质量模式计票与冷启动
+
+- 授权：用户在讨论方案后要求改动 1、2、3 一起做，复核修正后要求推送到 `origin/main`。未授权远端采集数据或部署。
+- 背景：172.16.0.1 上 out_us 8 天内性能换线 49 次。按代码推断：探测间隔 29s 时窗口只有 2–3 个样本，单个慢样本让 P 偏高约 68s；现任运行时 RTT 只要略高于基线就刷新证据，每 5s 计一票，约 20s 凑满 4 票。
+- 影响：`app/router/strategy_champion_quality.go`、新测试文件、`docs/champion.md`、ADR 0001 与本计划。不改配置、proto、wire format 和状态字段结构。
+
+- [x] 改动 1：运行时票只在运行时分量 D+max(F,L) 本身（滚动分和最近分）落后晋级门槛，或挑战者 rank 更好时计入
+- [x] 改动 2：探测票要求现任有新探测样本、挑战者有新证据，且用现任最新样本代替 P 后仍落后门槛；“现任新证据”改用探测样本时间
+- [x] 改动 3：冷启动（新实例或 tentative）时，首选在观测范围内但没有任何探测结果且未确认故障，继续按未验证使用首选；故障切换和代次变化不等待
+- [x] 质量决策日志增加 `vote=`；`current_evidence_at` 改为最近一次计票时现任探测样本时间
+- [x] 回归测试先在旧代码上失败；同步文档与 ADR；格式化与验证
+
+结果：
+
+- `recordWin` 改为按票型计票并返回票型：探测票要求现任有新探测样本、挑战者有新证据，且 `qualityLatestLeads` 成立；运行时票要求现任有新运行时证据，且 `qualityRuntimeLed` 成立；`preferred_near` 只计探测票。首票也必须有支持证据；挑战者自身票数同样封顶到门槛。
+- `qualityCandidates` 返回首选是否待首个探测结果；`reselect` 在冷启动或 tentative 且首选待结果时继续按 `quality_unverified` 处理。故障切换和代次变化不等待。
+- `pickQuality` 由 132 行拆到 78 行（`reselect`、`qualityChallenger`、`qualityCandidates`）；质量日志函数原样移到 `app/router/strategy_champion_quality_log.go`，主文件 407 行。
+- 新增 `app/router/strategy_champion_quality_vote_test.go`：单个慢样本不晋级、持续慢探测按探测节奏晋级（约 90s）、运行时劣化约 20s 晋级、冷启动等待首选、首选失败/不在观测范围/已 down 时不等待、故障切换不等待。前四项在旧代码上失败，后两项为保护性测试。
+
+验证记录：
+
+- `gofmt -l app/router/` 无输出；`go vet ./app/router/` 通过；`go run ./infra/vformat/main.go -mode check -pwd ./` 通过；`git diff --check` 通过。
+- `go test -race -count=10 -run 'Champion|BalancingRuleBuildChampion' ./app/router/` 通过。
+- `go test -count=1 ./app/metrics/ ./app/observatory/...` 通过；`./app/router/` 全量仅既有 5 项失败（`TestChinaSites` 缺 `geosite.dat`；`TestLocalOSRule`；`TestRouterScriptBalancerReload`、`TestRouterScriptConcurrentBalancerReload`、`TestSimpleBalancer` 为 `X is not in context.`），跳过这 5 项后通过。
+
+遗留：
+
+- 现任探测本身偏慢的原因（复用繁忙 xmux 连接或新建连接握手）未验证；单次探测失败仍会让现任成为 Suspect；有流量刷新运行时证据时降为可靠性等级 1，下一次成功探测前约 20s 即可切换。
+- 冷启动等待首选首个结果没有计时器；首个探测样本含握手时仍可能偏高。
+- 探测间隔较长时，只有探测证据的劣化切换明显变慢（29s 时约 1.5min）；现任抖动时切换约慢一半。
+- 未做实网、长时间运行或生产验证；配置建议仍是把 `probeInterval` 调到 10s，`candidateObservationCount` 保持 4。
+
+## 2026-11-14 Champion 证据记账复核修正
+
+- 授权：用户要求“检查一下review结果，并修正”，随后要求推送到 `origin/main`。未部署。
+- 复核结论：review 的三项均成立，均在修正前用回归测试复现。
+  1. 重新计数时 `resetDuel` 同时清空现任证据游标：`preferred_near` 用过的现任探测样本在转为 `quality_promoted` 后被原样重读，又计一票（修正前 `wins=1`，应为 0）。
+  2. 任一票都同时推进探测与运行时游标：运行时票消耗未用的探测样本，下一轮探测票被吞（修正前 `wins=2`，应为 3）；探测票消耗未用的运行时证据（修正前 `wins=1`，应为 2）。状态接口的证据时间与实际所用观测不符。
+  3. 冷启动等待首选期间，每个新快照版本都经 `selectTag` 刷新 `lastSwitch`：`last_switch_at` 持续变化，日志 `cooldown_remaining` 一直是 30s。
+- 影响：`app/router/strategy_champion_quality.go`、`app/router/strategy_champion_quality_log.go`、`app/router/strategy_champion_quality_vote_test.go`、`docs/champion.md`、ADR 0001。状态 JSON 字段结构不变；质量日志新增三个字段。
+
+- [x] 回归测试先在修正前失败
+- [x] `resetDuel` 只清计票；现任证据游标属于擂主任期，由 `selectTag` 清空
+- [x] `recordWin` 按票型推进游标：探测票推进现任探测样本与挑战者证据，运行时票只推进运行时证据
+- [x] `selectTag` 只在 tag、代次或验证状态变化时更新 `lastSwitch`
+- [x] 日志增加 `current_evidence_at`、`candidate_evidence_at`、`runtime_evidence_at`；同步文档与 ADR；格式化与验证
+
+结果：
+
+- 新增测试 `TestChampionQualityVoteConsumesOnlyUsedEvidence`（两个子测试）、`TestChampionQualityRecountDoesNotReuseEvidence`、`TestChampionQualityPendingPreferredKeepsSwitchTime`，修正前全部失败。
+- 日志的 `evidence_at` 仍是选中线路的综合证据时间；本票所用观测看三个新字段，字段放在 `vote=` 之前，`vote=... wins=...` 保持相邻。
+
+验证记录：
+
+- `gofmt -l app/router/` 无输出；`go run ./infra/vformat/main.go -mode check -pwd ./` 通过；`go vet ./app/router/` 通过；`git diff --check` 通过。
+- `go test -race -count=10 -run 'Champion|BalancingRuleBuildChampion' ./app/router/` 通过。
+- `./app/router/` 跳过既有 5 项失败后通过；`go test -count=1 ./app/metrics/ ./app/observatory/...` 通过。
+
+遗留：
+
+- 重新计数后，若现任只有探测证据，首票要等下一次探测（29s 间隔时最多约 29s）。
+- 自定义 observatory 若给出不含单调时钟的证据时间且墙钟回拨，游标会让性能票在整个任期内停到新样本时间追上为止；明确故障的接管不受影响。内置 `QualityStore` 用 `time.Now`，带单调时钟，不受影响。

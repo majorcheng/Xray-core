@@ -33,7 +33,8 @@ curl -s http://127.0.0.1:11/debug/vars | jq '.champion.out_us'
 - `current`：实际接收新流的当前擂主；`quality_current`：综合质量模型记录的擂主。`shadow` 模式下两者可能不同。
 - `preferred`、`mode`、`state`、`reason`：首选线路、模式、当前可靠性状态和最近一次决策理由。
 - `challenger`、`challenge_kind`、`wins`、`required_wins`、`challenger_wins`、`challenger_required_wins`：正在挑战的线路、普通晋级或 preferred 接近回切、同类挑战的总票数和门槛、当前挑战者自己的票数和门槛（总门槛的一半，向上取整）。
-- `last_evaluation_at`、`last_switch_at`、`challenge_started_at`、`cooldown_remaining_ms`：评估、切换、计票开始时间和剩余冷却；`snapshot_epoch/version` 是已用于决策的版本，`quality_snapshot_epoch/version` 是当前底层质量快照版本。
+- `last_evaluation_at`、`last_switch_at`、`challenge_started_at`、`cooldown_remaining_ms`：评估、切换、计票开始时间和剩余冷却；`last_switch_at` 只在擂主、代次或验证状态变化时更新，冷启动等待首选首个结果期间重复选择同一未验证线路时不刷新它，也不重置冷却；`snapshot_epoch/version` 是已用于决策的版本，`quality_snapshot_epoch/version` 是当前底层质量快照版本。
+- `current_evidence_at`、`candidate_evidence_at`、`runtime_evidence_at`：本擂主任期内最近一次探测票所用的现任探测样本时间、当前挑战者最近一次探测票所用的证据时间、最近一次运行时票所用的现任运行时证据时间。下一张探测票需要比前两个时间更新的观测，下一张运行时票需要比第三个时间更新的观测。现任的两个时间在重新累计时保留、换擂主时清空；挑战者的时间随重新累计清空。
 - `candidates[]`：每个候选的 `state`、`known`、`reason`、`reliability_rank`、`score_ms`、`recent_score_ms`、`probe_ms`、`probe_updated`、`transport_rtt_ms`、`transport_rtt_updated`、`loss_sent`、`loss_estimated`、`loss_updated`、`loss_corrected` 和证据时间。
 
 没有有效样本的耗时字段为 `null`，不会用 0ms 或默认 500ms 冒充测量。`loss_sent` 和 `loss_estimated` 是客户端发送端判失视角，不能解读为精确双向丢包率。`current` 是当前实际选路，`quality_current` 是模型内部状态；排查 `shadow` 时优先比较这两个字段。`off` 模式下候选的 `score_ms` 是第 5 节的综合分数，与切换日志的 `*_score_ms` 同口径；observatory 的原始 `Delay` 在 `legacy_delay_ms`，存活状态在 `alive`。
@@ -47,7 +48,7 @@ curl -s http://127.0.0.1:11/debug/vars | jq '.champion.out_us'
 
 ### 排名与切换
 
-先排除 `unavailable` / `recovering`，再比较可靠性等级，同级比较分数。所有候选都可挑战当前擂主。无有效 healthcheck 的指标为 `unknown`，不填入 500ms、1ms 或零丢包。冷启动可临时选择未验证线路；现任只是缺少新观测时保留选择并暂停晋级；全不可用时返回空 tag 交给 fallback。
+先排除 `unavailable` / `recovering`，再比较可靠性等级，同级比较分数。所有候选都可挑战当前擂主。无有效 healthcheck 的指标为 `unknown`，不填入 500ms、1ms 或零丢包。冷启动可临时选择未验证线路；首选已在观测范围内、未确认故障，但还没有任何探测结果时，冷启动先按未验证（`quality_unverified`）使用首选，等首选的第一个结果（成功或失败）再做首次选择，避免先完成探测的其他候选抢先成为擂主；故障切换和代次变化不等待。现任只是缺少新观测时保留选择并暂停晋级；全不可用时返回空 tag 交给 fallback。
 
 ```text
 P = healthcheck 均值 + healthPingJitterScale × 波动
@@ -61,7 +62,12 @@ D 同时考虑均值与波动的增长。F/L 按有效样本数、时间覆盖�
 
 普通晋级要求可靠性持续更好，或同级下滚动分数与近期分数均改善至少 `max(20ms, 现任分数 × 15%)`。preferred 只有同级、新鲜且 `S_preferred - S_best <= max(10ms, S_best × 5%)` 才可获得偏好；不能挡住已经达到普通晋级门槛的其他候选。
 
-普通晋级默认需要 4 个有新证据的周期，且从首票起持续至少 20 秒；preferred 接近回切默认需要 6 个周期，持续至少 30 秒。性能切换间隔至少 30 秒。重复读取、无关线路更新、单次旧尖峰都不能补足票数；长于 10 秒没有评估会重新累计。同类晋级中挑战者轮换（例如两个相近的快节点交替领先）时保留总票数，但每一票仍要求现任出现新证据；每个挑战者单独记录已计票证据，轮换回来时要有自己的新证据才计票（现任有新的运行时劣化证据时，候选只需新鲜）。晋级目标自身至少要拿到门槛一半的票（向上取整，普通晋级默认 2 票），只在最后一轮领先的候选不能兑现其他挑战者的票。切换类别变化时重新累计。探测稀疏时会更慢，不能保证固定 20–30 秒切换。
+普通晋级默认需要 4 票，且从首票起持续至少 20 秒；preferred 接近回切默认需要 6 票，持续至少 30 秒。性能切换间隔至少 30 秒。每个 5s 周期最多计一票，每票都要有与本次判断有关的新观测。一票只消耗它实际使用的观测：探测票消耗现任探测样本和挑战者证据，运行时票只消耗现任运行时证据，未用的观测留给后续同类票；现任的每个观测在整个擂主任期内最多支撑一票，切换类别变化、优势中断或评估中断后重新累计也不能再用。普通晋级有两种票型：
+
+- 探测票（`probe`）：现任有新的探测样本，挑战者有新证据，并且用现任最新一次探测代替 P 后，挑战者仍领先晋级门槛（最新一次探测失败或挑战者可靠性等级更好也算领先）。探测间隔较长时窗口只有 2–3 个样本，单个慢样本会让 P 在整个探测有效期内偏高；最新样本恢复后就不再计票，所以单个慢样本最多计一票。探测票按探测节奏累计：探测间隔 29s 时普通晋级约需 1.5 分钟，10s 时约 30 秒。
+- 运行时票（`runtime`）：现任有新的运行时证据（实际 RTT、握手、失败或 loss），并且双方运行时分量 `D + max(F, L)` 的差距本身（滚动分与近期分）达到晋级门槛，或挑战者可靠性等级更好。此时备用候选只需新鲜，票按 5s 周期累计，约 20 秒切换。现任实际 RTT 只略高于基线时，运行时证据与本次劣势无关，不计运行时票。
+
+preferred 接近回切只计探测票，只要求现任有新的探测样本、首选有新证据，不比较最新样本。重复读取、无关线路更新、单次旧尖峰都不能补足票数；长于 10 秒没有评估会重新累计。同类晋级中挑战者轮换（例如两个相近的快节点交替领先）时保留总票数，但每一票仍按上面的规则要求新观测；每个挑战者单独记录已计票证据，轮换回来时要有自己的新证据才计探测票。晋级目标自身至少要拿到门槛一半的票（向上取整，普通晋级默认 2 票），只在最后一轮领先的候选不能兑现其他挑战者的票。切换类别变化时重新累计。探测稀疏时会更慢，不能保证固定 20–30 秒切换。
 
 10 秒内两个独立、连续的同阶段物理连接故障，或两个不同周期的连续 healthcheck 失败，可确认不可用；明确故障在下一次新流选择时跳过性能冷却。握手失败、已建立连接故障和 healthcheck 分开累计，不能相加成“两次”。新握手成功只恢复握手阶段；本地 healthcheck 成功可验证已建立传输路径。恢复要求对应阶段 3 个不同有效周期成功，仅恢复比较资格。握手阶段失败后，现有 healthcheck 会临时绕过 mux/xmux，使用独立连接验证；完成后关闭该私有 H3 客户端。
 
@@ -71,7 +77,7 @@ D 同时考虑均值与波动的增长。F/L 按有效样本数、时间覆盖�
 
 初值为 `L = 500ms × 权重 × min(1, 判失压力 / 5%)`。5% 是归一化参考，不是判死线；持续 loss 可推动性能切换，单次尖峰恢复后不能继续累计持续劣化票。协议栈负责重发与拥塞控制；Champion 只改变后续新流的选择。
 
-质量日志以 `champion quality` 开头，包含 `balancer`、`mode`、`reason`、旧/新分数、可用性状态、`old_last_failure`、可靠性等级、P/D/F/L 成本、`probe_ms`、`transport_rtt_ms`、`sender=client`、发送/判失计数、修正标记、更新时间、总票数与门槛（`wins`/`required_wins`）、当前挑战者自身票数与门槛（`challenger_wins`/`challenger_required_wins`）以及冷却。缺失时延或分数打印 `unknown`；旧擂主不在候选集时（例如首次选择），旧擂主字段打印 `none`。时间字段使用不含空格的 RFC3339 毫秒格式，缺失时打印 `none`；`evidence_at` 与状态接口的 `evidence_at` 同源。`old_last_failure` 是旧擂主最近一次探测失败原因，带引号，线路恢复后不清空，不等于本次决策的 `reason`。日志级别：稳态与观察为 Debug；shadow 中的建议变化为 Info；select 中替换已有擂主为 Warning，首次选择为 Info。切换理由包括 `quality_failover`、`quality_promoted`、`preferred_near`；`shadow` 中的新 tag 是建议结果。评分不依赖日志级别，正常稳态不会逐请求重复打印质量决定。
+质量日志以 `champion quality` 开头，包含 `balancer`、`mode`、`reason`、旧/新分数、可用性状态、`old_last_failure`、可靠性等级、P/D/F/L 成本、`probe_ms`、`transport_rtt_ms`、`sender=client`、发送/判失计数、修正标记、更新时间、已用证据时间（`current_evidence_at`、`candidate_evidence_at`、`runtime_evidence_at`）、本次票型（`vote`：`none`、`probe`、`runtime` 或 `probe+runtime`）、总票数与门槛（`wins`/`required_wins`）、当前挑战者自身票数与门槛（`challenger_wins`/`challenger_required_wins`）以及冷却。缺失时延或分数打印 `unknown`；旧擂主不在候选集时（例如首次选择），旧擂主字段打印 `none`。时间字段使用不含空格的 RFC3339 毫秒格式，缺失时打印 `none`；`evidence_at` 是选中线路的综合证据时间，与状态接口候选的 `evidence_at` 同源，不是本票所用的观测；三个已用证据时间与状态接口同名字段同源，是本次决策后的值，晋级日志中记录的是被替换现任最后一票所用的观测。`old_last_failure` 是旧擂主最近一次探测失败原因，带引号，线路恢复后不清空，不等于本次决策的 `reason`。日志级别：稳态与观察为 Debug；shadow 中的建议变化为 Info；select 中替换已有擂主为 Warning，首次选择为 Info。切换理由包括 `quality_failover`、`quality_promoted`、`preferred_near`；`shadow` 中的新 tag 是建议结果。评分不依赖日志级别，正常稳态不会逐请求重复打印质量决定。
 
 `qualityMode` 为 `shadow` 或 `select`，但 observatory 不提供质量数据时，启动时记录一次 Warning（`champion quality mode unavailable`，`effective_mode=off`），并按 `off` 运行。
 
