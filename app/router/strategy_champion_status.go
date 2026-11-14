@@ -21,6 +21,8 @@ type ChampionStatus struct {
 	ChallengeKind          string                         `json:"challenge_kind,omitempty"`
 	Wins                   int                            `json:"wins"`
 	RequiredWins           int                            `json:"required_wins"`
+	ChallengerWins         int                            `json:"challenger_wins"`
+	ChallengerRequiredWins int                            `json:"challenger_required_wins"`
 	CandidateCount         int                            `json:"candidate_count"`
 	Initialized            bool                           `json:"initialized"`
 	Tentative              bool                           `json:"tentative"`
@@ -145,6 +147,7 @@ func (s *ChampionStrategy) championStatus(tags []string) ChampionStatus {
 	status.Challenger = qualityState.challenger
 	status.ChallengeKind = qualityState.kind
 	status.Wins = qualityState.wins
+	status.ChallengerWins = qualityState.challengerWins
 	status.Initialized = qualityState.initialized
 	status.Tentative = qualityState.tentative
 	status.SnapshotEpoch = qualityState.lastEpoch
@@ -160,6 +163,7 @@ func (s *ChampionStrategy) championStatus(tags []string) ChampionStatus {
 		if qualityState.kind == "preferred_near" {
 			status.RequiredWins = settings.PreferredObservationCount
 		}
+		status.ChallengerRequiredWins = championOwnVotesRequired(status.RequiredWins)
 	}
 	if !qualityState.lastSwitch.IsZero() {
 		remaining := championQualityCooldown - time.Since(qualityState.lastSwitch)
@@ -199,7 +203,7 @@ func (s *ChampionStrategy) championStatus(tags []string) ChampionStatus {
 		item.Tag = tag
 		candidate := makeChampionQualityCandidate(item, now, settings)
 		if !qualityEnabled {
-			candidate = championLegacyCandidate(tag, legacy[tag])
+			candidate = championLegacyCandidate(tag, legacy[tag], settings)
 		}
 		if candidate.quality.State == "" {
 			candidate.quality.State = extension.QualityUnknown
@@ -215,7 +219,8 @@ func (s *ChampionStrategy) championStatus(tags []string) ChampionStatus {
 	return status
 }
 
-func championLegacyCandidate(tag string, item *observatory.OutboundStatus) championQualityCandidate {
+// championLegacyCandidate 的 score_ms 与选路和切换日志使用同一综合分数；原始 Delay 另在 legacy_delay_ms 输出。
+func championLegacyCandidate(tag string, item *observatory.OutboundStatus, settings ChampionSettings) championQualityCandidate {
 	candidate := championQualityCandidate{quality: extension.OutboundQuality{Tag: tag, State: extension.QualityUnknown}, rank: 2}
 	if item == nil {
 		return candidate
@@ -227,7 +232,7 @@ func championLegacyCandidate(tag string, item *observatory.OutboundStatus) champ
 	candidate.known = item.Alive
 	candidate.rank = 0
 	if item.Alive {
-		candidate.score = float64(item.Delay)
+		candidate.score = float64(championOutboundScore(item, settings))
 		candidate.recentScore = candidate.score
 		candidate.evidence = time.Unix(item.LastSeenTime, 0)
 	}

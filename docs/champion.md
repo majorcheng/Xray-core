@@ -32,11 +32,11 @@ curl -s http://127.0.0.1:11/debug/vars | jq '.champion.out_us'
 
 - `current`：实际接收新流的当前擂主；`quality_current`：综合质量模型记录的擂主。`shadow` 模式下两者可能不同。
 - `preferred`、`mode`、`state`、`reason`：首选线路、模式、当前可靠性状态和最近一次决策理由。
-- `challenger`、`challenge_kind`、`wins`、`required_wins`：正在挑战的线路、普通晋级或 preferred 接近回切、有效票数和门槛。
+- `challenger`、`challenge_kind`、`wins`、`required_wins`、`challenger_wins`、`challenger_required_wins`：正在挑战的线路、普通晋级或 preferred 接近回切、同类挑战的总票数和门槛、当前挑战者自己的票数和门槛（总门槛的一半，向上取整）。
 - `last_evaluation_at`、`last_switch_at`、`challenge_started_at`、`cooldown_remaining_ms`：评估、切换、计票开始时间和剩余冷却；`snapshot_epoch/version` 是已用于决策的版本，`quality_snapshot_epoch/version` 是当前底层质量快照版本。
 - `candidates[]`：每个候选的 `state`、`known`、`reason`、`reliability_rank`、`score_ms`、`recent_score_ms`、`probe_ms`、`probe_updated`、`transport_rtt_ms`、`transport_rtt_updated`、`loss_sent`、`loss_estimated`、`loss_updated`、`loss_corrected` 和证据时间。
 
-没有有效样本的耗时字段为 `null`，不会用 0ms 或默认 500ms 冒充测量。`loss_sent` 和 `loss_estimated` 是客户端发送端判失视角，不能解读为精确双向丢包率。`current` 是当前实际选路，`quality_current` 是模型内部状态；排查 `shadow` 时优先比较这两个字段。
+没有有效样本的耗时字段为 `null`，不会用 0ms 或默认 500ms 冒充测量。`loss_sent` 和 `loss_estimated` 是客户端发送端判失视角，不能解读为精确双向丢包率。`current` 是当前实际选路，`quality_current` 是模型内部状态；排查 `shadow` 时优先比较这两个字段。`off` 模式下候选的 `score_ms` 是第 5 节的综合分数，与切换日志的 `*_score_ms` 同口径；observatory 的原始 `Delay` 在 `legacy_delay_ms`，存活状态在 `alive`。
 
 ### 数据口径
 
@@ -61,7 +61,7 @@ D 同时考虑均值与波动的增长。F/L 按有效样本数、时间覆盖�
 
 普通晋级要求可靠性持续更好，或同级下滚动分数与近期分数均改善至少 `max(20ms, 现任分数 × 15%)`。preferred 只有同级、新鲜且 `S_preferred - S_best <= max(10ms, S_best × 5%)` 才可获得偏好；不能挡住已经达到普通晋级门槛的其他候选。
 
-普通晋级默认需要 4 个有新证据的周期，且从首票起持续至少 20 秒；preferred 接近回切默认需要 6 个周期，持续至少 30 秒。性能切换间隔至少 30 秒。重复读取、无关线路更新、单次旧尖峰都不能补足票数；长于 10 秒没有评估会重新累计。探测稀疏时会更慢，不能保证固定 20–30 秒切换。
+普通晋级默认需要 4 个有新证据的周期，且从首票起持续至少 20 秒；preferred 接近回切默认需要 6 个周期，持续至少 30 秒。性能切换间隔至少 30 秒。重复读取、无关线路更新、单次旧尖峰都不能补足票数；长于 10 秒没有评估会重新累计。同类晋级中挑战者轮换（例如两个相近的快节点交替领先）时保留总票数，但每一票仍要求现任出现新证据；每个挑战者单独记录已计票证据，轮换回来时要有自己的新证据才计票（现任有新的运行时劣化证据时，候选只需新鲜）。晋级目标自身至少要拿到门槛一半的票（向上取整，普通晋级默认 2 票），只在最后一轮领先的候选不能兑现其他挑战者的票。切换类别变化时重新累计。探测稀疏时会更慢，不能保证固定 20–30 秒切换。
 
 10 秒内两个独立、连续的同阶段物理连接故障，或两个不同周期的连续 healthcheck 失败，可确认不可用；明确故障在下一次新流选择时跳过性能冷却。握手失败、已建立连接故障和 healthcheck 分开累计，不能相加成“两次”。新握手成功只恢复握手阶段；本地 healthcheck 成功可验证已建立传输路径。恢复要求对应阶段 3 个不同有效周期成功，仅恢复比较资格。握手阶段失败后，现有 healthcheck 会临时绕过 mux/xmux，使用独立连接验证；完成后关闭该私有 H3 客户端。
 
@@ -71,7 +71,9 @@ D 同时考虑均值与波动的增长。F/L 按有效样本数、时间覆盖�
 
 初值为 `L = 500ms × 权重 × min(1, 判失压力 / 5%)`。5% 是归一化参考，不是判死线；持续 loss 可推动性能切换，单次尖峰恢复后不能继续累计持续劣化票。协议栈负责重发与拥塞控制；Champion 只改变后续新流的选择。
 
-质量日志以 `champion quality` 开头，包含 `mode`、`reason`、旧/新分数、P/D/F/L 成本、`probe_ms`、`transport_rtt_ms`、`sender=client`、发送/判失计数、修正标记、更新时间、胜场与冷却。缺失时延打印 `unknown`。切换理由包括 `quality_failover`、`quality_promoted`、`preferred_near`；`shadow` 中的新 tag 是建议结果。评分不依赖日志级别，正常稳态不会逐请求重复打印质量决定。
+质量日志以 `champion quality` 开头，包含 `balancer`、`mode`、`reason`、旧/新分数、可用性状态、`old_last_failure`、可靠性等级、P/D/F/L 成本、`probe_ms`、`transport_rtt_ms`、`sender=client`、发送/判失计数、修正标记、更新时间、总票数与门槛（`wins`/`required_wins`）、当前挑战者自身票数与门槛（`challenger_wins`/`challenger_required_wins`）以及冷却。缺失时延或分数打印 `unknown`；旧擂主不在候选集时（例如首次选择），旧擂主字段打印 `none`。时间字段使用不含空格的 RFC3339 毫秒格式，缺失时打印 `none`；`evidence_at` 与状态接口的 `evidence_at` 同源。`old_last_failure` 是旧擂主最近一次探测失败原因，带引号，线路恢复后不清空，不等于本次决策的 `reason`。日志级别：稳态与观察为 Debug；shadow 中的建议变化为 Info；select 中替换已有擂主为 Warning，首次选择为 Info。切换理由包括 `quality_failover`、`quality_promoted`、`preferred_near`；`shadow` 中的新 tag 是建议结果。评分不依赖日志级别，正常稳态不会逐请求重复打印质量决定。
+
+`qualityMode` 为 `shadow` 或 `select`，但 observatory 不提供质量数据时，启动时记录一次 Warning（`champion quality mode unavailable`，`effective_mode=off`），并按 `off` 运行。
 
 这些阈值是工程初值。自动测试覆盖确定性状态回放与真实本机 H3 往返，尚未进行广域网丢包注入、双端 loss 回传或生产校准。详细验证结果记录在 `tasks/todo.md`。
 
@@ -102,7 +104,7 @@ Champion 是一个“保住现任擂主，再谨慎切换”的 balancer strateg
 当前 Champion 独立实现于 `app/router/strategy_champion.go`，没有复用 `roundrobin` 的内部逻辑。相关语义见：
 
 - `app/router/strategy_champion.go::(*ChampionStrategy).PickOutbound`
-- `app/router/strategy_champion.go::(*ChampionStrategy).pickRoundRobinFallback`
+- `app/router/strategy_champion.go::(*ChampionStrategy).pickRoundRobinFallbackLocked`
 
 ## 2. Champion 依赖什么输入
 
@@ -140,12 +142,14 @@ Champion 会退化为普通轮询。
 代码路径：
 
 - `app/router/strategy_champion.go::(*ChampionStrategy).PickOutbound`
-- `app/router/strategy_champion.go::(*ChampionStrategy).pickRoundRobinFallback`
+- `app/router/strategy_champion.go::(*ChampionStrategy).pickRoundRobinFallbackLocked`
 
 这时不会使用健康观测结果。
 
 - 若 `strategy.settings.preferredTag` 命中候选集，且当前还没有既有 champion，或旧 champion 已不在当前候选集，则首轮 round-robin fallback 会先从它启动
 - 后续请求再继续按候选数组顺序轮转
+
+observatory 读取失败或返回不支持的结果时，同样退化为轮询。轮询每次请求都会换 tag，因此不逐次记录切换：进入回退或回退原因变化时记录一次 Warning（`champion fallback to round robin`），恢复使用观测结果时记录一次 Info（`champion fallback ended`）。字段见第 13 节。
 
 ### 3.2 有 observatory 时
 
@@ -160,7 +164,9 @@ Champion 每次选择时会先构造三个角色：
 - `app/router/strategy_champion_support.go::(*championObservation).preferred`
 - `app/router/strategy_champion_support.go::(*championObservation).anchor`
 - `app/router/strategy_champion_support.go::(*championObservation).best`
-- `app/router/strategy_champion.go::(*ChampionStrategy).selectObserved`
+- `app/router/strategy_champion.go::(*ChampionStrategy).decideLocked`
+
+observatory 的读取、决策与提交在同一次加锁内完成：提交顺序与读取顺序一致，较早读到的旧观测不会在新观测之后提交，因此不会重复计票，也不会撤销刚完成的晋级。内置 observatory 的 `GetObservation` 只复制内存状态，不做网络 I/O。日志在解锁后输出。
 
 ### 3.3 全部 candidate 都死掉时
 
@@ -168,8 +174,8 @@ Champion 会返回空 tag，由 balancer 的 `fallbackTag` 接管。
 
 代码路径：
 
-- `app/router/strategy_champion.go::(*ChampionStrategy).selectObserved`
-- `app/router/strategy_champion.go::(*ChampionStrategy).commitAllCandidatesDead`
+- `app/router/strategy_champion.go::(*ChampionStrategy).decideLocked`
+- `app/router/strategy_champion.go::(*ChampionStrategy).pickObserved`
 - `app/router/balancing.go::(*Balancer).PickOutbound`
 
 只要 `fallbackTag` 已配置，balancer 会回退到该 tag。
@@ -178,7 +184,7 @@ Champion 会返回空 tag，由 balancer 的 `fallbackTag` 接管。
 
 ### 4.1 Challenger 晋级规则
 
-当前 champion 是 `preferred` 时，其他 candidate 需要满足下面两层条件才能晋级：
+无论当前 champion 是否为 `preferred`，其他 candidate 都需要满足下面两层条件才能晋级：
 
 第一层：当前快照里 challenger 显著更优。
 
@@ -188,15 +194,25 @@ Champion 会返回空 tag，由 balancer 的 `fallbackTag` 接管。
 - challenger 分数必须满足 `bestDelay < anchorDelay * 4 / 7`
 - challenger 分数必须满足 `bestDelay < anchorDelay - 100ms`
 
-第二层：这个“显著更优”要在多个不同观测快照上连续出现。
+第二层：这个“显著更优”要在多个不同观测上连续出现。
 
 代码在：
 
-- `app/router/strategy_champion.go::(*ChampionStrategy).decideChallenge`
-- `app/router/strategy_champion.go::(*ChampionStrategy).recordDuelWin`
-- `app/router/strategy_champion_support.go::(*championObservation).duelKey`
+- `app/router/strategy_champion.go::(*ChampionStrategy).challengeLocked`
+- `app/router/strategy_champion_support.go::(*championDuel).observe`
+- `app/router/strategy_champion_support.go::championDuelKey`
 
-当前实现按“不同观测快照”计数，避免同一份 observatory 结果被高并发请求重复记分。
+计票规则：
+
+- “不同观测”按参与比较的分数判断：anchor 分数、challenger tag、challenger 分数任一变化才计一票。观测在策略锁内读取并按顺序提交（见 3.2），同一份 observatory 结果不会被高并发请求重复记分
+- runtime feedback 只刷新 `LastTryTime` / `LastSeenTime`，不产生新测量，因此时间戳变化不计票
+- 连续两轮测量的分数完全相同时只计一票，极少数情况下晋级会多等一轮
+- challenger 可以轮换：只要每次观测都有 candidate 满足第一层条件就继续累计总票数；任一次观测不满足即清零
+- 每一票同时记给本轮的晋级目标：通常是 best；当前 champion 不是 preferred，且 preferred 与 best 满足 4.2 的第一层条件时记给 preferred
+- 总票数达到 `candidateObservationCount` 时，只有本轮目标可以晋级，并且它自己至少要有一半票（向上取整；默认 4 票中至少 2 票）。只在最后一轮领先的候选不能兑现其他候选攒下的票，只会继续观察
+- 晋级或 anchor 变化后胜场清零
+
+preferred 作为本轮目标晋级时，日志为 `reason=preferred_reclaimed`，避免先切到 best 再被 preferred 回切。preferred 只在最后一轮接近 best 时，不会借普通挑战的票回切。
 
 ### 4.2 Preferred 回切规则
 
@@ -212,12 +228,14 @@ Champion 会返回空 tag，由 balancer 的 `fallbackTag` 接管。
 - 当 `preferredDelay <= anchorDelay` 时，不受 `preferredMaxDelayGap` 限制
 - `anchorDelay > preferredDelay * 4 / 7`
 
-第二层：这个“足够接近且更优”要连续出现在多个不同观测快照上。
+第二层：这个“足够接近且更优”要连续出现在多个不同观测上，计票规则同 4.1。
 
 代码在：
 
-- `app/router/strategy_champion.go::(*ChampionStrategy).decidePreferredReclaim`
-- `app/router/strategy_champion.go::(*ChampionStrategy).recordDuelWin`
+- `app/router/strategy_champion.go::(*ChampionStrategy).challengeLocked`
+- `app/router/strategy_champion_support.go::(*championDuel).observe`
+
+回切计数与 4.1 的普通挑战计数相互独立，同一次观测可以同时为两者计票；先达到门槛的规则生效。
 
 ## 5. Champion 的分数怎么算
 
@@ -230,6 +248,7 @@ Champion 会返回空 tag，由 balancer 的 `fallbackTag` 接管。
 代码路径：
 
 - `app/router/strategy_champion_support.go::(*championObservation).delayScore`
+- `app/router/strategy_champion_support.go::championOutboundScore`：选路、切换日志和 `/debug/vars` 的 `score_ms` 共用
 
 ### 5.2 有 HealthPing 时
 
@@ -390,7 +409,7 @@ Proto 定义在：
 
 ### 8.1 `candidateObservationCount`
 
-含义：challenger 要连续赢多少个不同观测快照，才能晋级为 champion。
+含义：challenger 要连续赢多少个不同观测，才能晋级为 champion。期间 challenger 可以轮换，但晋级目标自己至少要赢其中一半（向上取整），见 4.1。
 
 配置字段：
 
@@ -404,8 +423,8 @@ Proto 定义在：
 
 实际作用位置：
 
-- `app/router/strategy_champion.go::(*ChampionStrategy).decideChallenge`
-- `app/router/strategy_champion.go::(*ChampionStrategy).recordDuelWin`
+- `app/router/strategy_champion.go::(*ChampionStrategy).challengeLocked`
+- `app/router/strategy_champion_support.go::(*championDuel).observe`
 
 建议：
 
@@ -415,7 +434,7 @@ Proto 定义在：
 
 ### 8.2 `preferredObservationCount`
 
-含义：preferred 要连续赢多少个不同观测快照，才能从当前非 preferred champion 手里回切。
+含义：preferred 接近回切（4.2）要连续赢多少个不同观测，才能从当前非 preferred champion 手里回切。普通挑战达到门槛、且本轮 preferred 接近 best 时，也可以经 4.1 回到 preferred；那条路径按 `candidateObservationCount` 计票，并要求 preferred 自己至少有一半票。
 
 配置字段：
 
@@ -429,8 +448,8 @@ Proto 定义在：
 
 实际作用位置：
 
-- `app/router/strategy_champion.go::(*ChampionStrategy).decidePreferredReclaim`
-- `app/router/strategy_champion.go::(*ChampionStrategy).recordDuelWin`
+- `app/router/strategy_champion.go::(*ChampionStrategy).challengeLocked`
+- `app/router/strategy_champion_support.go::(*championDuel).observe`
 
 建议：
 
@@ -514,7 +533,7 @@ Proto 定义在：
 实际作用位置：
 
 - `app/router/strategy_champion_support.go::(*championObservation).preferred`
-- `app/router/strategy_champion.go::(*ChampionStrategy).pickRoundRobinFallback`
+- `app/router/strategy_champion.go::(*ChampionStrategy).pickRoundRobinFallbackLocked`
 
 规则：
 
@@ -644,13 +663,34 @@ Champion 切换时会打日志，代码在：
 
 - `app/router/strategy_champion.go::(*ChampionStrategy).logChampionSwitch`
 
-当前常见 `reason` 包括：
+格式：
 
-- `round_robin_fallback`
+```text
+champion switched balancer=<tag> reason=<reason> old_tag=<tag|none> new_tag=<tag|none> old_score_ms=<分数> new_score_ms=<分数>
+```
+
+- `*_score_ms` 是第 5 节的综合分数，不是实测延迟；`dead` 表示 observatory 判定不可用，`unknown` 表示没有观测（算法按 500ms 参与比较）或旧擂主已不在候选集，`none` 表示没有对应擂主
+- 旧擂主为空（启动、规则重载、全部失效后恢复）时用 Info，其余切换用 Warning
+- tag 字段（`balancer`、`old_tag`、`new_tag`、`champion`、`challenger`）在没有对应 tag 时输出 `none`；tag 本身是 `none`，或含空白、`=`、引号、不可打印字符时加引号输出，例如 `new_tag="out us"`
+
+当前 `reason` 包括：
+
+- `no_previous_champion`：没有旧擂主，选择 preferred
+- `champion_removed`：旧擂主不在当前候选集，回到 preferred
+- `champion_unavailable`：旧擂主失效，回到 preferred
 - `challenger_promoted`
 - `preferred_reclaimed`
-- `best_selected_from_non_anchor`
+- `best_selected_from_non_anchor`：旧擂主和 preferred 都不可用，选择 best
 - `all_candidates_dead`
+
+轮询回退只在进入和退出时记录：
+
+```text
+champion fallback to round robin balancer=<tag> cause=<cause> quality_mode=<mode> error=<"错误"|none>
+champion fallback ended balancer=<tag> cause=<cause> champion=<tag|none>
+```
+
+`cause` 取值为 `observatory_unavailable`、`observation_error`、`observation_unsupported`。回退期间擂主记录随轮询变化；`champion` 是回退结束后选出的擂主，它与最后一次轮询结果相同时不会再有 `champion switched` 日志。
 
 这些日志适合用来排查：
 

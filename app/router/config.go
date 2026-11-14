@@ -161,7 +161,7 @@ func (br *BalancingRule) Build(ohm outbound.Manager, dispatcher routing.Dispatch
 		}
 		return &Balancer{
 			selectors:   br.OutboundSelector,
-			strategy:    &ChampionStrategy{FallbackTag: br.FallbackTag, Settings: settings},
+			strategy:    &ChampionStrategy{FallbackTag: br.FallbackTag, BalancerTag: br.Tag, Settings: settings},
 			fallbackTag: br.FallbackTag,
 			ohm:         ohm,
 		}, nil

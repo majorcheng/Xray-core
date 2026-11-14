@@ -808,3 +808,32 @@ Git：当前 `main`、`origin/main` 无跟踪分叉，基线 `1e8e0429cfc943f481
 
 - `app/dns::TestDNSScriptGeoIPFallback` 仍依赖缺失的 `resources/geoip.dat`；非 GeoIP Lua 用例已通过，未下载外部 geodata。
 - 未运行全仓 `go test ./...`、外部 ECH/WARP 服务、真实 TUN/生产设备和跨平台运行验证。
+
+## 2026-11-14 Champion 评审与修正
+
+- 授权：用户先要求从合理性、稳定性和日志可读性评审 champion，再要求按评审结果实现，最后要求复审并按复审结果修正代码，随后要求推送到 `origin/main`。未部署。
+- 影响：`app/router/strategy_champion*.go`、`app/router/config.go`、`docs/champion.md`、ADR 0001 与本计划；`/debug/vars` 的 champion 状态只新增字段。
+
+- [x] 评审并修正旧模式计票键、挑战者轮换、非首选擂主劣化、决策与提交竞态、质量模式墙钟回拨、回退与切换日志
+- [x] 复审并修正锁外读取观测、最后一轮候选晋级、质量轮换复用证据、日志 tag 边界和状态分数口径
+- [x] 补充回归测试，同步使用文档与 ADR
+
+结果：
+
+- 旧模式在策略锁内读取观测、决策并提交，提交顺序与读取顺序一致。内置 observatory 只复制内存状态；锁顺序为 `s.mu`、`statusLock`、`hp.access`，后两者的临界区内没有路由调用。
+- 计票键只含参与比较的分数，runtime feedback 刷新时间戳不计票。挑战者轮换保留总票数；晋级目标自身至少有门槛一半的票（向上取整），preferred 经普通挑战回切也按此计算。
+- 质量模式按挑战者分别记录票数与已计票证据；日志与状态新增 `challenger_wins`、`challenger_required_wins`。旧快照按 Version 丢弃，墙钟回拨不再冻结故障切换。
+- 日志带 `balancer`，分数缺失时输出 `none`/`unknown`/`dead`；tag 是 `none` 或含空白、`=`、引号、不可打印字符时加引号。轮询回退只在进入和退出时记录。`off` 模式状态的 `score_ms` 改用与选路相同的综合分数。
+
+验证记录（Go 1.27.3、Linux amd64）：
+
+- 修正前用临时测试复现 6 个场景：两轮测量计 4 票、旧快照撤销晋级、最后一轮候选晋级、preferred 绕过回切计数、质量轮换复用证据、质量最后一轮候选晋级。临时文件已删除。
+- `go test -race -count=10 -run 'Champion|BalancingRuleBuildChampion' ./app/router/` 通过；`./app/metrics/`、`./app/observatory/...` 通过。
+- `go test -count=1 ./app/router/` 只有 5 个既有失败，HEAD 上同样失败：`TestChinaSites`（缺 `resources/geosite.dat`）、`TestLocalOSRule`（`this rule has no effective fields`）、`TestRouterScriptBalancerReload`、`TestRouterScriptConcurrentBalancerReload`、`TestSimpleBalancer`（`X is not in context.`）。
+- `go vet ./app/router/ ./app/metrics/`、`gofmt`、`go run -mod=readonly ./infra/vformat/main.go -mode check -pwd ./`、`git diff --check` 通过。
+
+遗留：
+
+- 质量模式 `quality_evidence_missing` 会清零挑战，ADR 写的是“短暂无新样本暂停”；超过 10s 未评估即重新累计保持文档既定行为。本轮均未改。
+- `pickQuality`、`championStatus`、`makeChampionQualityCandidate` 既有长度超过 80 行；本轮只在前两者各增加 2 行。
+- 未做实网、长时间运行或生产验证。

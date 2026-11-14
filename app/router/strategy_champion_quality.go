@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/xtls/xray-core/common/errors"
@@ -12,20 +13,29 @@ import (
 const championQualityCooldown = 30 * time.Second
 
 type championQualityState struct {
-	current                            string
-	generation                         uint64
-	tentative                          bool
-	initialized                        bool
-	lastEpoch                          int64
-	lastVersion                        uint64
-	lastEvaluation                     time.Time
-	lastSwitch                         time.Time
-	challenger, kind                   string
-	wins                               int
+	current          string
+	generation       uint64
+	tentative        bool
+	initialized      bool
+	lastEpoch        int64
+	lastVersion      uint64
+	lastEvaluation   time.Time
+	lastSwitch       time.Time
+	challenger, kind string
+	// wins 是同类挑战的总票数；challengerWins 与 candidateEvidence 是当前挑战者自己的票数和已计票证据。
+	wins, challengerWins               int
 	started                            time.Time
 	currentEvidence, candidateEvidence time.Time
 	runtimeEvidence                    time.Time
-	reason                             string
+	// votes 保存同类挑战中每个挑战者的票数与证据；只能在 s.mu 内读写，日志与状态只读上面的字段。
+	votes  map[string]championQualityVote
+	reason string
+}
+
+// championQualityVote 是某个挑战者在本次同类挑战中的票数和最后一次计票所用的证据时间。
+type championQualityVote struct {
+	wins     int
+	evidence time.Time
 }
 
 type championQualityCandidate struct {
@@ -173,7 +183,7 @@ func qualityPreferredNear(preferred, best championQualityCandidate) bool {
 }
 
 func (q *championQualityState) resetDuel() {
-	q.challenger, q.kind, q.wins = "", "", 0
+	q.challenger, q.kind, q.wins, q.challengerWins, q.votes = "", "", 0, 0, nil
 	q.started, q.currentEvidence, q.candidateEvidence, q.runtimeEvidence = time.Time{}, time.Time{}, time.Time{}, time.Time{}
 }
 
@@ -183,20 +193,32 @@ func (q *championQualityState) selectTag(tag string, candidate championQualityCa
 	q.resetDuel()
 }
 
+// recordWin 只在同类挑战内累计胜场。挑战者轮换时保留总票数，否则两个相近的快节点交替领先时永远无法晋级。
+// 每个挑战者单独记录已计票证据：轮换回来的挑战者不能用旧证据再拿一票；
+// 晋级目标自身还要有至少一半票，避免只在最后一轮领先的候选兑现其他挑战者的票。
 func (q *championQualityState) recordWin(tag, kind string, current, candidate championQualityCandidate, now time.Time, threshold int) bool {
-	if tag != q.challenger || kind != q.kind {
+	if kind != q.kind {
 		q.resetDuel()
-		q.challenger, q.kind, q.started = tag, kind, now
+		q.kind, q.started = kind, now
 	}
-	paired := current.evidence.After(q.currentEvidence) && candidate.evidence.After(q.candidateEvidence)
+	vote := q.votes[tag]
+	q.challenger, q.challengerWins, q.candidateEvidence = tag, vote.wins, vote.evidence
+	paired := current.evidence.After(q.currentEvidence) && candidate.evidence.After(vote.evidence)
+	// 现任有新的运行时劣化证据时，新鲜的备用 healthcheck 即可提供接管资格，不要求候选也有新样本。
 	runtime := kind != "preferred_near" && current.runtimeEvidence.After(q.runtimeEvidence)
-	if q.wins == 0 || paired || runtime {
-		q.wins = min(threshold, q.wins+1)
-		q.currentEvidence, q.candidateEvidence, q.runtimeEvidence = current.evidence, candidate.evidence, current.runtimeEvidence
-	} else {
+	if q.wins > 0 && !paired && !runtime {
 		return false
 	}
-	return q.wins >= threshold && now.Sub(q.started) >= time.Duration(threshold)*extension.QualityInterval && now.Sub(q.lastSwitch) >= championQualityCooldown
+	if q.votes == nil {
+		q.votes = make(map[string]championQualityVote)
+	}
+	vote = championQualityVote{wins: vote.wins + 1, evidence: candidate.evidence}
+	q.votes[tag] = vote
+	q.wins = min(threshold, q.wins+1)
+	q.challengerWins, q.candidateEvidence = vote.wins, vote.evidence
+	q.currentEvidence, q.runtimeEvidence = current.evidence, current.runtimeEvidence
+	return q.wins >= threshold && vote.wins >= championOwnVotesRequired(threshold) &&
+		now.Sub(q.started) >= time.Duration(threshold)*extension.QualityInterval && now.Sub(q.lastSwitch) >= championQualityCooldown
 }
 
 func (s *ChampionStrategy) pickQuality(tags []string, snapshot extension.OutboundQualitySnapshot) string {
@@ -207,7 +229,9 @@ func (s *ChampionStrategy) pickQuality(tags []string, snapshot extension.Outboun
 	}
 	s.mu.Lock()
 	state := &s.qualityState
-	if state.initialized && (snapshot.Epoch < state.lastEpoch || snapshot.Version < state.lastVersion) {
+	// Version 单调递增；Epoch 来自墙钟，只在 Version 相同时用于丢弃并发拿到的旧周期快照。
+	// 墙钟回拨后新样本会推进 Version，故障切换因此不会被冻结。
+	if state.initialized && (snapshot.Version < state.lastVersion || snapshot.Version == state.lastVersion && snapshot.Epoch < state.lastEpoch) {
 		tag := state.current
 		if !hasCurrentCandidate(tags, tag) {
 			tag = ""
@@ -331,10 +355,47 @@ func (s *ChampionStrategy) pickQuality(tags []string, snapshot extension.Outboun
 }
 
 func qualityScoreText(c championQualityCandidate) string {
+	if c.quality.Tag == "" {
+		return "none"
+	}
 	if !c.known {
 		return "unknown"
 	}
 	return fmt.Sprintf("%.2f", c.score)
+}
+
+func qualityComponentsText(c championQualityCandidate) string {
+	if c.quality.Tag == "" {
+		return "none"
+	}
+	if !c.known {
+		return "unknown"
+	}
+	return fmt.Sprintf("[%.2f,%.2f,%.2f,%.2f]", c.probeCost, c.runtimeCost, c.failureCost, c.lossCost)
+}
+
+// qualityCandidateText 对不在候选集的擂主输出 none，避免零值被误读为真实状态。
+func qualityCandidateText(c championQualityCandidate, value any) any {
+	if c.quality.Tag == "" {
+		return "none"
+	}
+	return value
+}
+
+// qualityTimeText 输出不含空格的毫秒级 RFC3339 时间，保证日志可按 key=value 解析。
+func qualityTimeText(t time.Time) string {
+	if t.IsZero() {
+		return "none"
+	}
+	return t.Format("2006-01-02T15:04:05.000Z07:00")
+}
+
+// qualityFailureText 加引号输出最近一次探测失败原因；该原因不会在恢复后清空。
+func qualityFailureText(reason string) string {
+	if reason == "" {
+		return "none"
+	}
+	return strconv.Quote(reason)
 }
 
 func qualityLatencyText(m extension.QualityLatency, now time.Time) string {
@@ -348,7 +409,8 @@ func (s *ChampionStrategy) logQualityDecision(mode, reason, oldTag, newTag strin
 	log := errors.LogDebug
 	if oldTag != newTag {
 		log = errors.LogInfo
-		if mode == ChampionQualitySelect {
+		// 首次选择不是故障切换，只有 select 模式下替换已有擂主才告警。
+		if mode == ChampionQualitySelect && oldTag != "" {
 			log = errors.LogWarning
 		}
 	}
@@ -361,20 +423,23 @@ func (s *ChampionStrategy) logQualityDecision(mode, reason, oldTag, newTag strin
 	if old.known {
 		threshold = fmt.Sprintf("%.2f", math.Max(20, old.score*.15))
 	}
-	log(s.ctx, "champion quality", " mode=", mode, " reason=", reason,
+	log(s.ctx, "champion quality", " balancer=", championTagForLog(s.BalancerTag), " mode=", mode, " reason=", reason,
 		" old_tag=", championTagForLog(oldTag), " new_tag=", championTagForLog(newTag),
 		" old_score_ms=", qualityScoreText(old), " new_score_ms=", qualityScoreText(next),
-		" state=", next.quality.State, " old_state=", old.quality.State, " old_reason=", old.quality.Reason,
-		" reliability_rank=", next.rank, " old_reliability_rank=", old.rank, " generation=", next.quality.Generation,
-		" probe_ms=", qualityLatencyText(next.quality.Probe, now), " probe_updated=", next.quality.Probe.Updated, " probe_fresh_until=", next.quality.Probe.FreshUntil,
-		" transport_rtt_ms=", qualityLatencyText(next.quality.RTT, now), " rtt_updated=", next.quality.RTT.Updated,
-		" score_components_ms[P,D,F,L]=", fmt.Sprintf("[%.2f,%.2f,%.2f,%.2f]", next.probeCost, next.runtimeCost, next.failureCost, next.lossCost),
-		" old_components_ms[P,D,F,L]=", fmt.Sprintf("[%.2f,%.2f,%.2f,%.2f]", old.probeCost, old.runtimeCost, old.failureCost, old.lossCost),
+		" state=", qualityCandidateText(next, next.quality.State), " old_state=", qualityCandidateText(old, old.quality.State),
+		" old_last_failure=", qualityCandidateText(old, qualityFailureText(old.quality.Reason)),
+		" reliability_rank=", qualityCandidateText(next, next.rank), " old_reliability_rank=", qualityCandidateText(old, old.rank),
+		" generation=", next.quality.Generation,
+		" probe_ms=", qualityLatencyText(next.quality.Probe, now), " probe_updated=", qualityTimeText(next.quality.Probe.Updated),
+		" probe_fresh_until=", qualityTimeText(next.quality.Probe.FreshUntil),
+		" transport_rtt_ms=", qualityLatencyText(next.quality.RTT, now), " rtt_updated=", qualityTimeText(next.quality.RTT.Updated),
+		" score_components_ms[P,D,F,L]=", qualityComponentsText(next), " old_components_ms[P,D,F,L]=", qualityComponentsText(old),
 		" sender=client", " loss_sent=", next.quality.Loss.Sent,
 		" loss_estimated=", next.quality.Loss.Lost, " loss_corrected=", next.quality.Loss.Corrected,
-		" loss_buckets=", next.quality.Loss.Buckets, " loss_updated=", next.quality.Loss.Updated,
+		" loss_buckets=", next.quality.Loss.Buckets, " loss_updated=", qualityTimeText(next.quality.Loss.Updated),
 		" challenger=", championTagForLog(decision.challenger), " challenger_score_ms=", qualityScoreText(challenger),
 		" improvement_required_ms=", threshold,
-		" evidence_at=", next.quality.Updated, " wins=", decision.wins, " required_wins=", count,
-		" cooldown_remaining=", max(time.Duration(0), championQualityCooldown-now.Sub(decision.lastSwitch)))
+		" evidence_at=", qualityTimeText(next.evidence), " wins=", decision.wins, " required_wins=", count,
+		" challenger_wins=", decision.challengerWins, " challenger_required_wins=", championOwnVotesRequired(count),
+		" cooldown_remaining=", max(time.Duration(0), championQualityCooldown-now.Sub(decision.lastSwitch)).Round(time.Millisecond))
 }

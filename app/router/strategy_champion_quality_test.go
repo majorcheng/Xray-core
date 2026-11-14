@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -210,6 +211,131 @@ func TestChampionQualityCostsAndReliability(t *testing.T) {
 	}
 }
 
+func TestChampionQualityAlternatingChallengersPromote(t *testing.T) {
+	s := newQualityChampion()
+	tags := []string{"a", "b", "c"}
+	at := time.Unix(1000, 0)
+	if got := s.pickQuality(tags, championQualitySnapshot(at, 100*time.Millisecond, 200*time.Millisecond, 200*time.Millisecond)); got != "a" {
+		t.Fatalf("initial champion=%s", got)
+	}
+	for step := 1; step <= 6; step++ {
+		// b 与 c 交替领先，但每一轮都有候选明显优于现任。
+		b, c := 100*time.Millisecond, 110*time.Millisecond
+		if step%2 == 0 {
+			b, c = c, b
+		}
+		want := "a"
+		if step == 6 {
+			want = "c"
+		}
+		snapshot := championQualitySnapshot(at.Add(time.Duration(step)*extension.QualityInterval), 300*time.Millisecond, b, c)
+		if got := s.pickQuality(tags, snapshot); got != want {
+			t.Fatalf("step %d got %s want %s (wins=%d)", step, got, want, s.qualityState.wins)
+		}
+	}
+}
+
+func TestChampionQualityRotatingChallengerNeedsNewEvidence(t *testing.T) {
+	s := newQualityChampion()
+	tags := []string{"a", "b", "c"}
+	at := time.Unix(1000, 0)
+	s.pickQuality(tags, championQualitySnapshot(at, 100*time.Millisecond, 200*time.Millisecond, 200*time.Millisecond))
+	bEvidence := at.Add(extension.QualityInterval)
+	for step := 1; step <= 3; step++ {
+		// b 与 c 交替成为挑战者；b 只在第一步有新探测，轮换回 b 时不能复用已计票的证据。
+		b, c := 100*time.Millisecond, 110*time.Millisecond
+		if step%2 == 0 {
+			b, c = c, b
+		}
+		snapshot := championQualitySnapshot(at.Add(time.Duration(step)*extension.QualityInterval), 300*time.Millisecond, b, c)
+		snapshot.Outbounds[1].Probe.Updated = bEvidence
+		s.pickQuality(tags, snapshot)
+	}
+	if state := s.qualityState; state.challenger != "b" || state.wins != 2 || state.challengerWins != 1 {
+		t.Fatalf("returning challenger reused counted evidence: challenger=%s wins=%d challenger_wins=%d",
+			state.challenger, state.wins, state.challengerWins)
+	}
+}
+
+func TestChampionQualityEphemeralChallengerNotPromoted(t *testing.T) {
+	s := newQualityChampion()
+	tags := []string{"a", "b", "c"}
+	at := time.Unix(1000, 0)
+	s.pickQuality(tags, championQualitySnapshot(at, 100*time.Millisecond, 200*time.Millisecond, 400*time.Millisecond))
+	withLogCapture(t, func(logs *captureLogHandler) {
+		for step := 1; step <= 7; step++ {
+			// b 持续明显更好；c 只在冷却到期的那一轮领先，它自己只有一票，不能兑现 b 攒下的票。
+			c := 400 * time.Millisecond
+			if step == 6 {
+				c = 50 * time.Millisecond
+			}
+			want := "a"
+			if step == 7 {
+				want = "b"
+			}
+			snapshot := championQualitySnapshot(at.Add(time.Duration(step)*extension.QualityInterval), 300*time.Millisecond, 100*time.Millisecond, c)
+			if got := s.pickQuality(tags, snapshot); got != want {
+				t.Fatalf("step %d got %s want %s", step, got, want)
+			}
+			if step == 6 {
+				if st := s.championStatus(tags); st.Challenger != "c" || st.ChallengerWins != 1 || st.ChallengerRequiredWins != 2 {
+					t.Fatalf("status hides challenger votes: %+v", st)
+				}
+			}
+		}
+		requireLogLine(t, logs, "reason=quality_observing", "challenger=c",
+			"wins=4 required_wins=4 challenger_wins=1 challenger_required_wins=2")
+	})
+}
+
+func TestChampionQualityClockBackwardStillFailsOver(t *testing.T) {
+	s := newQualityChampion()
+	tags := []string{"a", "b"}
+	at := time.Unix(1000, 0)
+	if got := s.pickQuality(tags, championQualitySnapshot(at, 100*time.Millisecond, 200*time.Millisecond)); got != "a" {
+		t.Fatalf("initial champion=%s", got)
+	}
+	// 墙钟回拨一分钟，但 store 序号继续递增；故障必须照常切换。
+	back := championQualitySnapshot(at.Add(-time.Minute), 100*time.Millisecond, 200*time.Millisecond)
+	back.Version = s.qualityState.lastVersion + 1
+	back.Outbounds[0].State = extension.QualityUnavailable
+	if got := s.pickQuality(tags, back); got != "b" {
+		t.Fatalf("clock rollback froze failover: %s", got)
+	}
+	// 序号相同但周期更早的快照来自并发读取，仍按过期处理。
+	older := championQualitySnapshot(at.Add(-2*time.Minute), 100*time.Millisecond, 200*time.Millisecond)
+	older.Version = back.Version
+	older.Outbounds[1].State = extension.QualityUnavailable
+	if got := s.pickQuality(tags, older); got != "b" {
+		t.Fatalf("older epoch with same version overwrote champion: %s", got)
+	}
+}
+
+func TestChampionQualityLogFormat(t *testing.T) {
+	s := newQualityChampion()
+	s.BalancerTag = "auto"
+	tags := []string{"a", "b"}
+	at := time.Unix(1000, 0)
+	withLogCapture(t, func(logs *captureLogHandler) {
+		s.pickQuality(tags, championQualitySnapshot(at, 100*time.Millisecond, 200*time.Millisecond))
+		requireLogLine(t, logs, "[Info]",
+			"champion quality balancer=auto mode=select reason=quality_initial_best old_tag=none new_tag=a",
+			"old_score_ms=none", "old_state=none", "old_last_failure=none", "old_reliability_rank=none",
+			"old_components_ms[P,D,F,L]=none", "probe_updated="+qualityTimeText(at), "rtt_updated=none",
+			"loss_updated=none", "evidence_at="+qualityTimeText(at), "cooldown_remaining=30s")
+		next := championQualitySnapshot(at.Add(extension.QualityInterval), 100*time.Millisecond, 200*time.Millisecond)
+		next.Outbounds[0].State = extension.QualityUnavailable
+		next.Outbounds[0].Reason = "dial tcp: i/o timeout"
+		s.pickQuality(tags, next)
+		requireLogLine(t, logs, "[Warning]", "reason=quality_failover old_tag=a new_tag=b",
+			"old_state=unavailable", `old_last_failure="dial tcp: i/o timeout"`, "old_reliability_rank=2",
+			"old_components_ms[P,D,F,L]=unknown")
+		if out := logs.text(); strings.Contains(out, "0001-01-01") || strings.Contains(out, " m=+") {
+			t.Fatalf("log contains unparsable time: %s", out)
+		}
+	})
+}
+
 type championQualityProvider struct {
 	staticObservatory
 	snapshot extension.OutboundQualitySnapshot
@@ -282,6 +408,20 @@ func TestChampionStatusSnapshot(t *testing.T) {
 	}
 	if !status.Candidates[1].LossKnown || status.Candidates[1].LossSent != 1000 || status.Candidates[1].LossEstimated != 10 {
 		t.Fatalf("candidate loss details missing: %+v", status.Candidates[1])
+	}
+}
+
+func TestChampionStatusLegacyScoreUsesComposite(t *testing.T) {
+	s := &ChampionStrategy{ctx: context.Background(), Settings: ChampionSettings{}.normalized(), observatory: &staticObservatory{
+		status: []*observatory.OutboundStatus{{
+			OutboundTag: "a", Alive: true, Delay: 100,
+			HealthPing: &observatory.HealthPingMeasurementResult{Average: 200 * int64(time.Millisecond), All: 10},
+		}},
+	}}
+	c := s.championStatus([]string{"a"}).Candidates[0]
+	// score_ms 与切换日志同为综合分数；原始 Delay 只在 legacy_delay_ms 中出现。
+	if c.ScoreMs == nil || *c.ScoreMs != 200 || c.LegacyDelayMs == nil || *c.LegacyDelayMs != 100 {
+		t.Fatalf("unexpected legacy candidate status: %+v", c)
 	}
 }
 

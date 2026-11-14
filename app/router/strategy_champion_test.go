@@ -115,27 +115,10 @@ func TestChampionStrategyFallbackToPreferredTagWhenLastTagIsStale(t *testing.T) 
 	}
 }
 
-func TestChampionStrategySwitchLogRoundRobinFallback(t *testing.T) {
-	strategy := &ChampionStrategy{}
-	withLogCapture(t, func(logs *captureLogHandler) {
-		tag := strategy.PickOutbound([]string{"a", "b"})
-		if tag != "a" {
-			t.Fatalf("unexpected selected tag, got=%q", tag)
-		}
-		requireLogContains(t, logs,
-			"champion switched",
-			"reason=round_robin_fallback",
-			"old_tag=none",
-			"new_tag=a",
-			"old_delay_ms=-1",
-			"new_delay_ms=-1",
-		)
-	})
-}
-
 func TestChampionStrategySwitchLogChallengerPromoted(t *testing.T) {
 	strategy := &ChampionStrategy{
-		ctx: context.Background(),
+		ctx:         context.Background(),
+		BalancerTag: "auto",
 		Settings: ChampionSettings{
 			CandidateObservationCount: 3,
 			PreferredObservationCount: 3,
@@ -144,24 +127,20 @@ func TestChampionStrategySwitchLogChallengerPromoted(t *testing.T) {
 		},
 		observatory: &staticObservatory{
 			status: []*observatory.OutboundStatus{
-				{OutboundTag: "a", Alive: true, Delay: 400, LastTryTime: 1},
-				{OutboundTag: "b", Alive: true, Delay: 80, LastTryTime: 1},
+				{OutboundTag: "a", Alive: true, Delay: 400},
+				{OutboundTag: "b", Alive: true, Delay: 80},
 			},
 		},
 	}
 	withLogCapture(t, func(logs *captureLogHandler) {
 		for i := int64(1); i <= 3; i++ {
-			strategy.observatory.(*staticObservatory).status[0].LastTryTime = i
-			strategy.observatory.(*staticObservatory).status[1].LastTryTime = i
+			setChampionDelays(strategy, 400, 80+i)
 			strategy.PickOutbound([]string{"a", "b"})
 		}
-		requireLogContains(t, logs,
-			"reason=challenger_promoted",
-			"old_tag=a",
-			"new_tag=b",
-			"old_delay_ms=400",
-			"new_delay_ms=80",
-		)
+		requireLogLine(t, logs, "[Info]",
+			"champion switched balancer=auto reason=no_previous_champion old_tag=none new_tag=a old_score_ms=none new_score_ms=400")
+		requireLogLine(t, logs, "[Warning]",
+			"champion switched balancer=auto reason=challenger_promoted old_tag=a new_tag=b old_score_ms=400 new_score_ms=83")
 	})
 }
 
@@ -197,13 +176,8 @@ func TestChampionStrategySwitchLogAllCandidatesDead(t *testing.T) {
 		if tag != "" {
 			t.Fatalf("expected empty tag, got=%q", tag)
 		}
-		requireLogContains(t, logs,
-			"reason=all_candidates_dead",
-			"old_tag=a",
-			"new_tag=none",
-			"old_delay_ms=-1",
-			"new_delay_ms=-1",
-		)
+		requireLogLine(t, logs, "[Warning]",
+			"reason=all_candidates_dead old_tag=a new_tag=none old_score_ms=dead new_score_ms=none")
 	})
 }
 
@@ -261,21 +235,19 @@ func TestChampionStrategyPreferredReclaimWhenCloseAndWithinThreshold(t *testing.
 		},
 		observatory: &staticObservatory{
 			status: []*observatory.OutboundStatus{
-				{OutboundTag: "a", Alive: true, Delay: 90, LastTryTime: 1},
-				{OutboundTag: "b", Alive: true, Delay: 150, LastTryTime: 1},
+				{OutboundTag: "a", Alive: true, Delay: 90},
+				{OutboundTag: "b", Alive: true, Delay: 150},
 			},
 		},
 	}
 
 	for i := int64(1); i <= 2; i++ {
-		strategy.observatory.(*staticObservatory).status[0].LastTryTime = i
-		strategy.observatory.(*staticObservatory).status[1].LastTryTime = i
+		setChampionDelays(strategy, 90, 150+i)
 		if tag := strategy.PickOutbound([]string{"a", "b"}); tag != "b" {
 			t.Fatalf("preferred should keep building reclaim streak before switch, got=%q at round=%d", tag, i)
 		}
 	}
-	strategy.observatory.(*staticObservatory).status[0].LastTryTime = 3
-	strategy.observatory.(*staticObservatory).status[1].LastTryTime = 3
+	setChampionDelays(strategy, 90, 153)
 	if tag := strategy.PickOutbound([]string{"a", "b"}); tag != "a" {
 		t.Fatalf("preferred should reclaim after 3 close wins, got=%q", tag)
 	}
@@ -293,21 +265,19 @@ func TestChampionStrategyPreferredReclaimWhenPreferredMuchFaster(t *testing.T) {
 		},
 		observatory: &staticObservatory{
 			status: []*observatory.OutboundStatus{
-				{OutboundTag: "a", Alive: true, Delay: 20, LastTryTime: 1},
-				{OutboundTag: "b", Alive: true, Delay: 150, LastTryTime: 1},
+				{OutboundTag: "a", Alive: true, Delay: 20},
+				{OutboundTag: "b", Alive: true, Delay: 150},
 			},
 		},
 	}
 
 	for i := int64(1); i <= 2; i++ {
-		strategy.observatory.(*staticObservatory).status[0].LastTryTime = i
-		strategy.observatory.(*staticObservatory).status[1].LastTryTime = i
+		setChampionDelays(strategy, 20, 150+i)
 		if tag := strategy.PickOutbound([]string{"a", "b"}); tag != "b" {
 			t.Fatalf("preferred should keep building reclaim streak before switch, got=%q at round=%d", tag, i)
 		}
 	}
-	strategy.observatory.(*staticObservatory).status[0].LastTryTime = 3
-	strategy.observatory.(*staticObservatory).status[1].LastTryTime = 3
+	setChampionDelays(strategy, 20, 153)
 	if tag := strategy.PickOutbound([]string{"a", "b"}); tag != "a" {
 		t.Fatalf("preferred should reclaim when it is much faster, got=%q", tag)
 	}
@@ -387,11 +357,11 @@ func TestChampionStrategyHealthPingJitterPenaltyPrefersStableNode(t *testing.T) 
 		},
 	}
 	for i := int64(1); i <= 3; i++ {
-		strategy.observatory.(*staticObservatory).status[0].LastTryTime = i
-		strategy.observatory.(*staticObservatory).status[1].LastTryTime = i
+		// 每轮抖动略有变化，代表一次新的 HealthPing 测量。
+		strategy.observatory.(*staticObservatory).status[0].HealthPing.Deviation = (180 + i) * int64(time.Millisecond)
 		strategy.PickOutbound([]string{"a", "b"})
 	}
-	if tag := strategy.currentChampion(); tag != "b" {
+	if tag := strategy.lastTag; tag != "b" {
 		t.Fatalf("expected stable node to become champion, got=%q", tag)
 	}
 }

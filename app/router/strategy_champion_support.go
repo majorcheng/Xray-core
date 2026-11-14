@@ -3,6 +3,7 @@ package router
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,18 +46,43 @@ type ChampionSettings struct {
 }
 
 type championDecision struct {
-	selectedTag       string
-	reason            string
-	oldDelayMs        int64
-	newDelayMs        int64
-	allCandidatesDead bool
+	selectedTag string
+	reason      string
 }
 
+// championDuelKey 只包含参与比较的分数。runtime feedback 会刷新 LastTryTime/LastSeenTime，
+// 但不会产生新测量，因此时间戳不能作为“不同观测”的依据。
 type championDuelKey struct {
-	anchorTimestamp     int64
-	anchorScore         int64
-	challengerTimestamp int64
-	challengerScore     int64
+	anchorScore     int64
+	challengerTag   string
+	challengerScore int64
+}
+
+// championDuel 累计“有挑战者胜出”的不同观测数。挑战者允许轮换，
+// 否则两个相近的快节点交替领先时永远无法晋级。votes 记录每个晋级目标自己的票数。
+type championDuel struct {
+	streak int
+	last   championDuelKey
+	votes  map[string]int
+}
+
+// observe 把一次胜出观测计入总票数和 target 的票数；与上一次完全相同的观测不重复计数。
+// 总票数达到阈值后，target 自身还要有至少一半票，避免只在最后一轮领先的候选晋级。
+func (d *championDuel) observe(key championDuelKey, target string, threshold int) bool {
+	if d.last != key {
+		d.streak++
+		d.last = key
+		if d.votes == nil {
+			d.votes = make(map[string]int)
+		}
+		d.votes[target]++
+	}
+	return d.streak >= threshold && d.votes[target] >= championOwnVotesRequired(threshold)
+}
+
+// championOwnVotesRequired 返回晋级目标自身至少需要的票数，即阈值的一半（向上取整）。
+func championOwnVotesRequired(threshold int) int {
+	return (threshold + 1) / 2
 }
 
 type championObservation struct {
@@ -133,7 +159,7 @@ func (o *championObservation) preferredTag() string {
 
 func (o *championObservation) anchor(lastTag string) (string, int64) {
 	preferredTag, preferredDelay := o.preferred()
-	if _, ok := o.candidateSet[lastTag]; ok {
+	if o.isCandidate(lastTag) {
 		lastDelay := o.delayScore(lastTag)
 		if lastDelay != championInfiniteDelay {
 			return lastTag, lastDelay
@@ -173,21 +199,24 @@ func (o *championObservation) preferredCanReclaim(preferredTag string, preferred
 	return anchorDelay > (preferredDelay * championMinRelativeImprovement / championRelativeImprovementDiv)
 }
 
-func (o *championObservation) duelKey(anchorTag string, anchorDelay int64, challengerTag string, challengerDelay int64) championDuelKey {
-	return championDuelKey{
-		anchorTimestamp:     o.timestamp(anchorTag),
-		anchorScore:         anchorDelay,
-		challengerTimestamp: o.timestamp(challengerTag),
-		challengerScore:     challengerDelay,
-	}
+func (o *championObservation) isCandidate(tag string) bool {
+	_, ok := o.candidateSet[tag]
+	return ok
 }
 
-func (o *championObservation) timestamp(tag string) int64 {
-	status, found := o.statusMap[tag]
-	if !found {
-		return 0
+// scoreText 返回日志用的综合评分。未观测候选在算法中按默认分数参与比较，日志显示 unknown。
+func (o *championObservation) scoreText(tag string) string {
+	if tag == "" {
+		return "none"
 	}
-	return championMaxInt64(status.LastTryTime, status.LastSeenTime)
+	status, found := o.statusMap[tag]
+	if !found || !o.isCandidate(tag) {
+		return "unknown"
+	}
+	if !status.Alive {
+		return "dead"
+	}
+	return strconv.FormatInt(o.delayScore(tag), 10)
 }
 
 func (o *championObservation) delayScore(tag string) int64 {
@@ -195,17 +224,21 @@ func (o *championObservation) delayScore(tag string) int64 {
 	if !found {
 		return championDefaultDelay
 	}
+	return championOutboundScore(status, o.settings)
+}
+
+// championOutboundScore 返回单个 observatory 结果的综合分数；选路、切换日志和状态快照共用这一口径。
+func championOutboundScore(status *observatory.OutboundStatus, settings ChampionSettings) int64 {
 	if !status.Alive {
 		return championInfiniteDelay
 	}
-	score := status.Delay
-	if score <= 0 {
-		score = championDefaultDelay
-	}
 	if status.HealthPing != nil {
-		score = championHealthPingScore(status, o.settings)
+		return championHealthPingScore(status, settings)
 	}
-	return score
+	if status.Delay <= 0 {
+		return championDefaultDelay
+	}
+	return status.Delay
 }
 
 func championHealthPingScore(status *observatory.OutboundStatus, settings ChampionSettings) int64 {
@@ -240,11 +273,4 @@ func absInt64(v int64) int64 {
 		return -v
 	}
 	return v
-}
-
-func championMaxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
